@@ -1,6 +1,40 @@
 OpenAI Codex
-Copyright 2025 OpenAI
+Copyright 2025 OpenAI
 
 This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
 Copyright (c) 2016-2022 Florian Dehau
 Copyright (c) 2023-2025 The Ratatui Developers
+
+===============================================================================
+
+kimcli
+
+kimcli is a rebranded build of OpenAI Codex CLI 0.144.3
+(https://github.com/openai/codex), distributed under the terms of the
+Apache License, Version 2.0 (see LICENSE). This fork is maintained by Kim
+and is not affiliated with or endorsed by OpenAI.
+
+Modifications made in this fork, relative to upstream Codex CLI 0.144.3:
+
+  * Binary identity: the CLI binary is renamed from `codex` to `kimcli`
+    (the underlying Cargo package/crate names are unchanged). Running
+    `kimcli --version` reports "kimcli 0.144.3 (rebranded codex-cli 0.144.3)".
+
+  * User-visible branding: terminal output, help text, onboarding copy, and
+    command examples that referred to "Codex" as a product, or invoked the
+    `codex` binary by name, were updated to refer to "Kim" / `kimcli`.
+    Functional identifiers are unchanged, including but not limited to:
+    environment variable names (e.g. CODEX_HOME, CODEX_API_KEY,
+    OPENAI_API_KEY, OPENAI_BASE_URL), the `~/.codex` home directory and its
+    layout, config.toml keys and schema, the app-server JSON-RPC wire
+    protocol, login/auth flows and "Sign in with ChatGPT" messaging,
+    telemetry/OTel tag values, and references to OpenAI's separate Codex
+    Desktop application.
+
+  * Self-update permanently disabled: kimcli never checks for or downloads
+    an upstream Codex release. The TUI upgrade-check and upgrade-banner
+    code paths are stubbed to no-ops, and the `kimcli update` subcommand
+    always refuses with a message pointing to
+    scripts/install_kimcli.sh in the kim repo, exiting non-zero.
+
+No other functional changes are made by this rebrand.
