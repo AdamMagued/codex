@@ -770,7 +770,7 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
 fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     println!();
     let cmd_str = action.command_str();
-    println!("Updating Codex via `{cmd_str}`...");
+    println!("Updating Kim via `{cmd_str}`...");
 
     let status = {
         #[cfg(windows)]
@@ -805,27 +805,17 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }
-    println!("\n🎉 Update ran successfully! Please restart Codex.");
+    println!("\n🎉 Update ran successfully! Please restart Kim.");
     Ok(())
 }
 
+/// kimcli is a pinned rebrand of Codex CLI: it never downloads or installs an upstream
+/// Codex build over itself. `kimcli update` always refuses and exits non-zero; see NOTICE
+/// for the full rebrand/attribution statement.
 fn run_update_command() -> anyhow::Result<()> {
-    #[cfg(debug_assertions)]
-    {
-        anyhow::bail!(
-            "`codex update` is not available in debug builds. Install a release build of Codex to use this command."
-        );
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        let Some(action) = codex_tui::get_update_action() else {
-            anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
-            );
-        };
-        run_update_action(action)
-    }
+    anyhow::bail!(
+        "kimcli is a pinned rebrand of Codex CLI 0.144.3 managed by Kim — update via scripts/install_kimcli.sh in the kim repo"
+    );
 }
 
 fn run_execpolicycheck(cmd: ExecPolicyCheckCommand) -> anyhow::Result<()> {
