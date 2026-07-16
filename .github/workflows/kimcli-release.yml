@@ -1,0 +1,295 @@
+# Release workflow for the kimcli binary (codex-rs/cli, package codex-cli).
+#
+# Triggers:
+#   1. Push a tag `kimcli-v*`      -> build all platforms and publish a
+#                                     GitHub Release with archives + sidecars.
+#   2. Manual "Run workflow"       -> `dry_run` defaults to true, which builds
+#      (workflow_dispatch)           only the macos-14/aarch64 host target and
+#                                     uploads the archive as a workflow
+#                                     artifact instead of publishing a release.
+#      Set dry_run=false to run the full build matrix without publishing
+#      (still no release, since only a tag push publishes).
+#
+# To release, follow a workflow like:
+# ```
+# git tag -a kimcli-v0.144.3 -m "kimcli 0.144.3"
+# git push origin kimcli-v0.144.3
+# ```
+
+name: kimcli-release
+
+on:
+  push:
+    tags:
+      - "kimcli-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: build only the host target (macos-14/aarch64) and upload it as a workflow artifact instead of publishing a release."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kimcli-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # --- Decide which matrix legs to build ------------------------------------
+  # A tag push (or workflow_dispatch with dry_run=false) builds the full
+  # release matrix. A workflow_dispatch left at its dry_run=true default only
+  # builds the macos-14/aarch64 host target, so the plumbing can be validated
+  # cheaply without spending CI minutes on every platform.
+  plan:
+    name: Plan build matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      dry_run: ${{ steps.plan.outputs.dry_run }}
+    steps:
+      - name: Determine build matrix
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          full_matrix='[
+            {"runner":"macos-14","target":"aarch64-apple-darwin","allow_failure":false},
+            {"runner":"macos-13","target":"x86_64-apple-darwin","allow_failure":false},
+            {"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","allow_failure":false},
+            {"runner":"windows-latest","target":"x86_64-pc-windows-msvc","allow_failure":true}
+          ]'
+          dry_run_matrix='[
+            {"runner":"macos-14","target":"aarch64-apple-darwin","allow_failure":false}
+          ]'
+
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            dry_run="false"
+          elif [[ "${{ github.event.inputs.dry_run }}" == "false" ]]; then
+            dry_run="false"
+          else
+            dry_run="true"
+          fi
+
+          if [[ "${dry_run}" == "true" ]]; then
+            matrix="${dry_run_matrix}"
+          else
+            matrix="${full_matrix}"
+          fi
+
+          echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(echo "${matrix}" | jq -c '.')" >> "$GITHUB_OUTPUT"
+
+  # --- Build kimcli for each target ------------------------------------------
+  build:
+    name: Build - ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    # Best-effort platforms (see matrix.allow_failure, currently only Windows)
+    # must not block the release job for the other platforms.
+    continue-on-error: ${{ matrix.allow_failure }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      # Use the git CLI instead of Cargo's libgit2 path for git dependencies.
+      # Mirrors rust-release.yml: macOS release runners have intermittently
+      # failed to fetch nested submodules through SecureTransport/libgit2.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: codex-rs
+
+      - name: Install musl build tools (Linux musl)
+        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends musl-tools pkg-config
+
+      - name: Disable aws-lc jitter entropy (musl)
+        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Mirrors rust-release.yml's "Disable aws-lc jitter entropy (musl)"
+          # step: avoid the problematic aws-lc jitter entropy code path on
+          # musl builders (kimcli pulls aws-lc-sys transitively via rustls).
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${{ matrix.target }}"
+          target_no_jitter="${target_no_jitter//-/_}"
+          echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
+
+      - name: Cargo build (kimcli)
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          if [[ "${target}" == "x86_64-pc-windows-msvc" ]]; then
+            # Mirrors rust-release.yml / rust-release-windows.yml: rusqlite's
+            # bundled libsqlite3-sys build fails under MSVC without this.
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
+          cargo build --release --target "${target}" --bin kimcli -p codex-cli
+
+      - name: Stage archive + sha256 sidecar
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          bin="kimcli"
+          if [[ "${target}" == "x86_64-pc-windows-msvc" ]]; then
+            bin="kimcli.exe"
+          fi
+
+          bin_path="target/${target}/release/${bin}"
+          if [[ ! -f "${bin_path}" ]]; then
+            echo "Built binary not found at ${bin_path}" >&2
+            exit 1
+          fi
+
+          rm -rf stage dist
+          mkdir -p stage dist
+          cp "${bin_path}" "stage/${bin}"
+          cp "${GITHUB_WORKSPACE}/LICENSE" "stage/LICENSE"
+          cp "${GITHUB_WORKSPACE}/NOTICE" "stage/NOTICE"
+
+          base="kimcli-${target}"
+
+          if [[ "${target}" == "x86_64-pc-windows-msvc" ]]; then
+            asset="${base}.zip"
+            chmod +x "stage/${bin}" 2>/dev/null || true
+            (cd stage && 7z a "../dist/${asset}" kimcli.exe LICENSE NOTICE)
+          else
+            asset="${base}.tar.gz"
+            chmod +x "stage/${bin}"
+            tar -C stage -czf "dist/${asset}" kimcli LICENSE NOTICE
+          fi
+
+          # Sidecar name/content matches kim-pro's install-kim.sh convention:
+          # "<asset minus archive extension>.sha256" containing
+          # "<hash>  <asset>", so a future kimcli installer can verify the
+          # same way. See kim-pro scripts/install-kim.sh.
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${asset}" > "${base}.sha256"
+          else
+            shasum -a 256 "${asset}" > "${base}.sha256"
+          fi
+          cat "${base}.sha256"
+
+          echo "asset=dist/${asset}" >> "$GITHUB_OUTPUT"
+          echo "sha=dist/${base}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kimcli-${{ matrix.target }}
+          path: |
+            codex-rs/${{ steps.stage.outputs.asset }}
+            codex-rs/${{ steps.stage.outputs.sha }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # --- Publish the GitHub Release (tag pushes only) --------------------------
+  release:
+    name: Publish release
+    needs:
+      - plan
+      - build
+    if: ${{ github.event_name == 'push' && needs.plan.outputs.dry_run == 'false' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: kimcli-*
+          path: dist
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        shell: bash
+        run: ls -la dist
+
+      - name: Write release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_path="${RUNNER_TEMP}/release-notes.md"
+          cat > "${notes_path}" <<'EOF'
+          kimcli is a rebranded build of OpenAI Codex CLI 0.144.3
+          (https://github.com/openai/codex), distributed under the terms of the
+          Apache License, Version 2.0 (see LICENSE). This fork is maintained by
+          Kim and is not affiliated with or endorsed by OpenAI.
+
+          Modifications made in this fork, relative to upstream Codex CLI 0.144.3:
+
+            * Binary identity: the CLI binary is renamed from `codex` to
+              `kimcli` (the underlying Cargo package/crate names are
+              unchanged).
+            * User-visible branding: terminal output, help text, onboarding
+              copy, and command examples that referred to "Codex" as a
+              product, or invoked the `codex` binary by name, were updated to
+              refer to "Kim" / `kimcli`. Functional identifiers are unchanged,
+              including environment variable names (e.g. CODEX_HOME,
+              CODEX_API_KEY, OPENAI_API_KEY, OPENAI_BASE_URL), the `~/.codex`
+              home directory and its layout, config.toml keys and schema, the
+              app-server JSON-RPC wire protocol, login/auth flows, telemetry
+              tag values, and references to OpenAI's separate Codex Desktop
+              application.
+            * Self-update permanently disabled: kimcli never checks for or
+              downloads an upstream Codex release.
+
+          No other functional changes are made by this rebrand.
+
+          kimcli 0.144.3 (rebranded codex-cli 0.144.3)
+
+          ### Verifying a download
+
+          Each archive has a matching `.sha256` sidecar:
+          ```
+          sha256sum -c kimcli-<target>.sha256
+          ```
+          EOF
+          echo "path=${notes_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          name: kimcli ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.path }}
+          files: dist/**
+          fail_on_unmatched_files: true
