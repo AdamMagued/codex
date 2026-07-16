@@ -1244,8 +1244,8 @@ fn auth_check(config: &Config) -> DoctorCheck {
             let mut check =
                 DoctorCheck::new("auth.credentials", "auth", status, summary).details(details);
             if status == CheckStatus::Fail {
-                check =
-                    check.remediation("Run kimcli login again or provide a supported auth env var.");
+                check = check
+                    .remediation("Run kimcli login again or provide a supported auth env var.");
             }
             check
         }
