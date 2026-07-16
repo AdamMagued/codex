@@ -894,11 +894,11 @@ fn maybe_push_unknown_special_path_warning(
         startup_warnings,
         match subpath.as_deref() {
             Some(subpath) => format!(
-                "Configured filesystem path `{path}` with nested entry `{}` is not recognized by this version of Codex and will be ignored. Upgrade Codex if this path is required.",
+                "Configured filesystem path `{path}` with nested entry `{}` is not recognized by this version of kimcli and will be ignored. Upgrade kimcli if this path is required.",
                 subpath.display()
             ),
             None => format!(
-                "Configured filesystem path `{path}` is not recognized by this version of Codex and will be ignored. Upgrade Codex if this path is required."
+                "Configured filesystem path `{path}` is not recognized by this version of kimcli and will be ignored. Upgrade kimcli if this path is required."
             ),
         },
     );
