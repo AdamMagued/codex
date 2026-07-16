@@ -88,20 +88,33 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::user_input::UserInput;
 use codex_terminal_detection::TerminalName;
 
-/// Codex CLI
+/// Version string printed by `kimcli --version` / `-V`.
+///
+/// kimcli is a pinned, rebranded build of Codex CLI; this composes the
+/// workspace package version (kept in lockstep with upstream Codex) rather
+/// than hardcoding a duplicate literal.
+const KIMCLI_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (rebranded codex-cli ",
+    env!("CARGO_PKG_VERSION"),
+    ")"
+);
+
+/// kimcli is a rebranded build of the Codex CLI (see NOTICE for attribution).
 ///
 /// If no subcommand is specified, options will be forwarded to the interactive CLI.
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    version,
+    name = "kimcli",
+    version = KIMCLI_VERSION,
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
-    // `codex-x86_64-unknown-linux-musl`, but the help output should always use
-    // the generic `codex` command name that users run.
-    bin_name = "codex",
-    override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
+    // `kimcli-x86_64-unknown-linux-musl`, but the help output should always use
+    // the generic `kimcli` command name that users run.
+    bin_name = "kimcli",
+    override_usage = "kimcli [OPTIONS] [PROMPT]\n       kimcli [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
