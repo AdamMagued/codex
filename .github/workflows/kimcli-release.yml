@@ -141,6 +141,18 @@ jobs:
           target_no_jitter="${target_no_jitter//-/_}"
           echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
 
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        # No official prebuilt v8 static libs exist for some targets (e.g.
+        # musl); the v8 crate's build.rs otherwise 404s trying to download
+        # one. Mirrors rust-release.yml: run this composite action for every
+        # non-Windows target so build.rs never hits the network at all. Skip
+        # Windows to match rust-ci-full.yml's `!contains(matrix.target,
+        # 'windows')` guard (official Windows v8 prebuilts already work).
+        if: ${{ !contains(matrix.target, 'windows') }}
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
       - name: Cargo build (kimcli)
         shell: bash
         run: |
