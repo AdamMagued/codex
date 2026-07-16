@@ -1,10 +1,12 @@
-//! Diagnoses whether Codex update paths target the running installation.
+//! Diagnoses whether update paths target the running installation.
 //!
-//! Update diagnostics combine cached version metadata, install-channel hints,
-//! and bounded latest-version probes. For npm-managed launches, this module also
-//! verifies that npm install -g would update the package root that launched the
-//! current process, which catches PATH and prefix mismatches before the user runs
-//! an update command.
+//! kimcli is a pinned rebrand of Codex CLI and permanently disables the upstream
+//! self-update flow (see `kimcli update`, `tui/src/updates.rs`, and
+//! `tui/src/update_action.rs`), so this check no longer probes GitHub/Homebrew for a
+//! "latest version" over the network. It still reports locally-known context (cached
+//! version-check state left over from prior runs, and install-channel hints), and for
+//! npm-managed launches it verifies that `npm install -g` would update the package root
+//! that launched the current process, which catches PATH and prefix mismatches.
 
 use std::path::Path;
 
@@ -19,26 +21,25 @@ use super::NpmRootCheck;
 use super::doctor_install_context;
 use super::doctor_managed_by_npm;
 use super::npm_global_root_check;
-use super::run_command;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
 
 /// Builds the update-health row for the current installation.
-///
-/// Network failures while fetching latest-version metadata degrade the row to a
-/// warning instead of failing doctor outright; update freshness is useful
-/// support context but should not mask more direct install/config failures.
 pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     let current_exe = std::env::current_exe().ok();
     let install_context = doctor_install_context(current_exe.as_deref());
     let mut details = vec![
+        "kimcli is a pinned rebrand of Codex CLI 0.144.3 managed by Kim; self-update is disabled. \
+         Update via scripts/install_kimcli.sh in the kim repo."
+            .to_string(),
         format!(
-            "check for update on startup: {}",
+            "check for update on startup: {} (ignored; kimcli never checks upstream)",
             config.check_for_update_on_startup
         ),
-        format!("update action: {}", update_action_label(&install_context)),
+        format!(
+            "upstream Codex update channel (informational only): {}",
+            update_action_label(&install_context)
+        ),
     ];
     let version_file = config.codex_home.join(VERSION_FILE_NAME);
     push_cached_version_details(&mut details, &version_file);
@@ -73,7 +74,7 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
                 status = status.max(CheckStatus::Warning);
                 summary = "npm update target could not be proven".to_string();
                 remediation = Some(
-                    "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
+                    "Reinstall or update Kim so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
                         .to_string(),
                 );
             }
@@ -82,21 +83,6 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
                 summary = "npm update target could not be inspected".to_string();
                 details.push(format!("npm root -g failed: {error}"));
             }
-        }
-    }
-
-    match fetch_latest_version(&install_context) {
-        Ok(latest_version) => {
-            details.push(format!("latest version: {latest_version}"));
-            if is_newer(&latest_version, env!("CARGO_PKG_VERSION")) == Some(true) {
-                details.push("latest version status: newer version is available".to_string());
-            } else {
-                details.push("latest version status: current version is not older".to_string());
-            }
-        }
-        Err(err) => {
-            status = status.max(CheckStatus::Warning);
-            details.push(format!("latest version probe: {err}"));
         }
     }
 
@@ -140,62 +126,6 @@ fn update_action_label(context: &InstallContext) -> &'static str {
     }
 }
 
-fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
-    match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(),
-        InstallMethod::Npm
-        | InstallMethod::Bun
-        | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(),
-    }
-}
-
-fn fetch_latest_github_release_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct ReleaseInfo {
-        tag_name: String,
-    }
-
-    let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
-}
-
-fn fetch_homebrew_cask_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
-        version: String,
-    }
-
-    http_get_json::<HomebrewCaskInfo>(HOMEBREW_CASK_API_URL).map(|info| info.version)
-}
-
-fn http_get_json<T>(url: &str) -> Result<T, String>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let body = run_command("curl", ["-fsSL", "--max-time", "5", url])?;
-    serde_json::from_str::<T>(&body).map_err(|err| err.to_string())
-}
-
-fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(latest), Some(current)) => Some(latest > current),
-        (Some(_), None) | (None, Some(_)) | (None, None) => None,
-    }
-}
-
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
-    let major = parts.next()?.parse::<u64>().ok()?;
-    let minor = parts.next()?.parse::<u64>().ok()?;
-    let patch = parts.next()?.parse::<u64>().ok()?;
-    Some((major, minor, patch))
-}
-
 #[derive(Deserialize)]
 struct VersionInfo {
     latest_version: String,
@@ -208,13 +138,6 @@ struct VersionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn is_newer_compares_plain_semver() {
-        assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
-        assert_eq!(is_newer("1.2.3", "1.2.4"), Some(false));
-        assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
-    }
 
     #[test]
     fn update_action_labels_install_contexts() {
