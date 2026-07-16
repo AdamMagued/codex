@@ -75,7 +75,7 @@ pub(super) fn render_human_report(report: &DoctorReport, options: HumanOutputOpt
     let _ = writeln!(
         out,
         "{} {}",
-        bold("Codex Doctor", options),
+        bold("Kim Doctor", options),
         dim(&header_suffix(report), options)
     );
     out.push('\n');
@@ -455,7 +455,7 @@ fn write_footer(out: &mut String, options: HumanOutputOptions) {
             out,
             "{}",
             dim(
-                "Run codex doctor without --summary for detailed diagnostics.",
+                "Run kimcli doctor without --summary for detailed diagnostics.",
                 options
             )
         );

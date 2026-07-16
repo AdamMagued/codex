@@ -135,7 +135,7 @@ struct MultitoolCli {
 
 #[derive(Debug, clap::Subcommand)]
 enum Subcommand {
-    /// Run Codex non-interactively.
+    /// Run Kim non-interactively.
     #[clap(visible_alias = "e")]
     Exec(ExecCli),
 
@@ -148,13 +148,13 @@ enum Subcommand {
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
 
-    /// Manage external MCP servers for Codex.
+    /// Manage external MCP servers for Kim.
     Mcp(McpCli),
 
-    /// Manage Codex plugins.
+    /// Manage Kim plugins.
     Plugin(PluginCli),
 
-    /// Start Codex as an MCP server (stdio).
+    /// Start Kim as an MCP server (stdio).
     McpServer(McpServerCommand),
 
     /// [experimental] Run the app server or related tooling.
@@ -170,13 +170,13 @@ enum Subcommand {
     /// Generate shell completion scripts.
     Completion(CompletionCommand),
 
-    /// Update Codex to the latest version.
+    /// kimcli is a pinned rebrand and does not self-update; running this always refuses.
     Update,
 
-    /// Diagnose local Codex installation, config, auth, and runtime health.
+    /// Diagnose local Kim installation, config, auth, and runtime health.
     Doctor(DoctorCommand),
 
-    /// Run commands within a Codex-provided sandbox.
+    /// Run commands within a Kim-provided sandbox.
     Sandbox(HostSandboxArgs),
 
     /// Debugging tools.
@@ -186,7 +186,7 @@ enum Subcommand {
     #[clap(hide = true)]
     Execpolicy(ExecpolicyCommand),
 
-    /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree.
+    /// Apply the latest diff produced by Kim agent as a `git apply` to your local working tree.
     #[clap(visible_alias = "a")]
     Apply(ApplyCommand),
 
@@ -295,7 +295,7 @@ struct DebugModelsCommand {
 
 #[derive(Debug, Parser)]
 struct ReviewCommand {
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of kimcli.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
@@ -305,7 +305,7 @@ struct ReviewCommand {
 
 #[derive(Debug, Parser)]
 struct McpServerCommand {
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of kimcli.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 }
@@ -365,7 +365,7 @@ struct SessionArchiveConfigOverrides {
     #[clap(flatten)]
     shared: SharedCliOptions,
 
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of kimcli.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
@@ -476,13 +476,13 @@ struct LoginCommand {
 
     #[arg(
         long = "with-api-key",
-        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)"
+        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | kimcli login --with-api-key`)"
     )]
     with_api_key: bool,
 
     #[arg(
         long = "with-access-token",
-        help = "Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`)"
+        help = "Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | kimcli login --with-access-token`)"
     )]
     with_access_token: bool,
 
@@ -530,7 +530,7 @@ struct AppServerCommand {
     #[command(subcommand)]
     subcommand: Option<AppServerSubcommand>,
 
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of kimcli.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
@@ -575,7 +575,7 @@ struct AppServerCommand {
 
 #[derive(Debug, Parser)]
 struct ExecServerCommand {
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of kimcli.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
@@ -615,7 +615,7 @@ enum AppServerSubcommand {
     /// [experimental] Generate JSON Schema for the app server protocol.
     GenerateJsonSchema(GenerateJsonSchemaCommand),
 
-    /// [internal] Generate internal JSON Schema artifacts for Codex tooling.
+    /// [internal] Generate internal JSON Schema artifacts for Kim tooling.
     #[clap(hide = true)]
     GenerateInternalJsonSchema(GenerateInternalJsonSchemaCommand),
 }
@@ -1377,7 +1377,7 @@ async fn cli_main(
                         .await;
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
-                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
+                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | kimcli login --with-api-key`."
                         );
                         std::process::exit(1);
                     } else if login_cli.with_api_key {
@@ -1500,7 +1500,7 @@ async fn cli_main(
             #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
             {
                 let _ = loader_overrides;
-                anyhow::bail!("`codex sandbox` is not supported on this operating system");
+                anyhow::bail!("`kimcli sandbox` is not supported on this operating system");
             }
         }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
@@ -1685,7 +1685,7 @@ fn profile_v2_for_subcommand<'a>(
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands and `kimcli mcp`: `kimcli`, `kimcli exec`, `kimcli review`, `kimcli resume`, `kimcli archive`, `kimcli delete`, `kimcli unarchive`, `kimcli fork`, `kimcli mcp`, `kimcli sandbox`, and `kimcli debug prompt-input`."
         ),
     }
 }
@@ -1699,7 +1699,7 @@ async fn run_exec_server_command(
     let codex_self_exe = arg0_paths
         .codex_self_exe
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Codex executable path is not configured"))?;
+        .ok_or_else(|| anyhow::anyhow!("kimcli executable path is not configured"))?;
     let runtime_paths = codex_exec_server::ExecServerRuntimePaths::new(
         codex_self_exe,
         arg0_paths.codex_linux_sandbox_exe.clone(),
@@ -1767,7 +1767,7 @@ async fn load_exec_server_remote_auth_provider(
 
     let auth = load_exec_server_remote_auth(
         config,
-        "remote exec-server registration requires ChatGPT authentication or API key authentication; run `codex login` or set CODEX_API_KEY",
+        "remote exec-server registration requires ChatGPT authentication or API key authentication; run `kimcli login` or set CODEX_API_KEY",
     )
     .await?;
 
@@ -2104,12 +2104,12 @@ fn reject_remote_mode_for_subcommand(
 ) -> anyhow::Result<()> {
     if let Some(remote) = remote {
         anyhow::bail!(
-            "`--remote {remote}` is only supported for interactive TUI commands, not `codex {subcommand}`"
+            "`--remote {remote}` is only supported for interactive TUI commands, not `kimcli {subcommand}`"
         );
     }
     if remote_auth_token_env.is_some() {
         anyhow::bail!(
-            "`--remote-auth-token-env` is only supported for interactive TUI commands, not `codex {subcommand}`"
+            "`--remote-auth-token-env` is only supported for interactive TUI commands, not `kimcli {subcommand}`"
         );
     }
     Ok(())
@@ -2200,7 +2200,7 @@ fn reject_strict_config_for_unsupported_subcommand(
     subcommand: &str,
 ) -> anyhow::Result<()> {
     if strict_config {
-        anyhow::bail!("`--strict-config` is not supported for `codex {subcommand}`");
+        anyhow::bail!("`--strict-config` is not supported for `kimcli {subcommand}`");
     }
     Ok(())
 }
@@ -2308,7 +2308,7 @@ async fn run_interactive_tui(
         }
 
         eprintln!(
-            "WARNING: TERM is set to \"dumb\". Codex's interactive TUI may not work in this terminal."
+            "WARNING: TERM is set to \"dumb\". Kim's interactive TUI may not work in this terminal."
         );
         if !confirm("Continue anyway? [y/N]: ")? {
             return Ok(AppExitInfo::fatal(
@@ -2360,7 +2360,7 @@ async fn run_interactive_tui(
             Err(backup_err) => {
                 local_state_db::print_diagnostic_guidance(startup_error);
                 return Ok(AppExitInfo::fatal(format!(
-                    "failed to move damaged Codex local database files into a backup folder automatically: {backup_err}"
+                    "failed to move damaged Kim local database files into a backup folder automatically: {backup_err}"
                 )));
             }
         }
