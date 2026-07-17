@@ -3,19 +3,15 @@ use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
 
-const ANNOUNCEMENT_TIP_URL: &str =
-    "https://raw.githubusercontent.com/openai/codex/main/announcement_tip.toml";
-
 const IS_MACOS: bool = cfg!(target_os = "macos");
 const IS_WINDOWS: bool = cfg!(target_os = "windows");
 
-const APP_TOOLTIP: &str = "Try the **Codex App**. Run 'kimcli app' or visit https://chatgpt.com/codex?app-landing-page=true";
+const APP_TOOLTIP: &str = "Try the **Codex Desktop** app. Run 'kimcli app' to open it.";
 const FAST_TOOLTIP: &str =
     "*New* Use **/fast** to enable our fastest inference with increased plan usage.";
-const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codex App**. Run 'kimcli app' or visit https://chatgpt.com/codex?app-landing-page=true";
+const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codex Desktop** app. Run 'kimcli app' to open it.";
 const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Kim.";
-const FREE_GO_TOOLTIP: &str =
-    "*New* For a limited time, Codex is included in your plan for free – let’s build together.";
+const FREE_GO_TOOLTIP: &str = "*New* Build faster with Kim.";
 
 const RAW_TOOLTIPS: &str = include_str!("../tooltips.txt");
 
@@ -121,7 +117,6 @@ fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R) -> Option<&'static str> {
 }
 
 pub(crate) mod announcement {
-    use crate::tooltips::ANNOUNCEMENT_TIP_URL;
     use crate::version::CODEX_CLI_VERSION;
     use chrono::NaiveDate;
     use chrono::Utc;
@@ -130,7 +125,6 @@ pub(crate) mod announcement {
     use serde::Deserialize;
     use std::sync::OnceLock;
     use std::thread;
-    use std::time::Duration;
 
     static ANNOUNCEMENT_TIP: OnceLock<Option<String>> = OnceLock::new();
     const CURRENT_OS: TargetOs = TargetOs::current();
@@ -206,18 +200,14 @@ pub(crate) mod announcement {
             .flatten()
     }
 
+    /// kimcli has no announcement feed of its own (this used to fetch a TOML file from
+    /// the upstream openai/codex GitHub repo, which would have rendered OpenAI's own
+    /// announcements — for a possibly different product — inside Kim's TUI). Rather than
+    /// point this at a repo we don't control, or invent a Kim-hosted equivalent that
+    /// doesn't exist yet, this always returns `None`, so `get_tooltip` falls back to the
+    /// local tooltip pool below.
     fn blocking_init_announcement_tip() -> Option<String> {
-        // Avoid system proxy detection to prevent macOS system-configuration panics (#8912).
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .build()
-            .ok()?;
-        let response = client
-            .get(ANNOUNCEMENT_TIP_URL)
-            .timeout(Duration::from_millis(2000))
-            .send()
-            .ok()?;
-        response.error_for_status().ok()?.text().ok()
+        None
     }
 
     pub(crate) fn parse_announcement_tip_toml(

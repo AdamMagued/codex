@@ -454,7 +454,7 @@ async fn process_request(
                             }
                         },
                         Err(_) => login_error_response(
-                            "Sign-in completed but redirecting back to Codex failed.",
+                            "Sign-in completed but redirecting back failed.",
                             io::ErrorKind::Other,
                             Some("redirect_failed"),
                             /*error_description*/ None,

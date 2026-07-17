@@ -14,14 +14,11 @@ Use /mcp to list configured MCP tools.
 Run `kimcli app` to open Codex Desktop (it installs on macOS if needed).
 Use /personality to customize how Kim communicates.
 Use /rename to rename your threads for easier thread resuming.
-Use the OpenAI docs MCP for API questions; enable it with `kimcli mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`.
-Join the OpenAI community Discord: http://discord.gg/openai
-Visit the Codex community forum: https://community.openai.com/c/codex/37
 You can run any shell command from Kim using `!` (e.g. `!ls`)
 Type / to open the command popup; Tab autocompletes slash commands.
 When the composer is empty, press Esc to step back and edit your last message; Enter confirms.
 Press Tab to queue a message when a task is running; otherwise it sends immediately (except `!`).
-[tui.keymap] in ~/.codex/config.toml lets you rebind supported shortcuts.
+[tui.keymap] in ~/.kim/codex/config.toml lets you rebind supported shortcuts.
 See the Kim keymap documentation for supported actions and examples.
 Paste an image with Ctrl+V to attach it to your next message.
 You can resume a previous conversation by running `kimcli resume`
