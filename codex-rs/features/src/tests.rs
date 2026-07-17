@@ -449,13 +449,19 @@ fn enable_fanout_normalization_enables_multi_agent_one_way() {
 }
 
 #[test]
-fn apps_require_feature_flag_and_chatgpt_auth() {
+fn apps_enabled_for_auth_is_hard_disabled_for_kimcli() {
+    // kimcli-branding hard-disables `apps_enabled_for_auth` unconditionally (see its
+    // doc comment): even with `Feature::Apps` enabled and ChatGPT-backend auth
+    // present -- the most permissive upstream combination -- it must never return
+    // true, since every caller uses it to decide whether to expose ChatGPT-hosted
+    // Apps tooling / phone chatgpt.com.
     let mut features = Features::with_defaults();
     assert!(!features.apps_enabled_for_auth(/*has_chatgpt_auth*/ false));
+    assert!(!features.apps_enabled_for_auth(/*has_chatgpt_auth*/ true));
 
     features.enable(Feature::Apps);
     assert!(!features.apps_enabled_for_auth(/*has_chatgpt_auth*/ false));
-    assert!(features.apps_enabled_for_auth(/*has_chatgpt_auth*/ true));
+    assert!(!features.apps_enabled_for_auth(/*has_chatgpt_auth*/ true));
 }
 
 #[test]
