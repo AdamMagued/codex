@@ -383,8 +383,30 @@ impl Features {
         self.enabled.contains(&f)
     }
 
-    pub fn apps_enabled_for_auth(&self, has_chatgpt_auth: bool) -> bool {
-        self.enabled(Feature::Apps) && has_chatgpt_auth
+    /// kimcli-branding override: unconditionally disabled.
+    ///
+    /// Upstream this gate is `self.enabled(Feature::Apps) && has_chatgpt_auth` — i.e. it
+    /// exposes ChatGPT-hosted "Apps" tooling and connector discovery whenever the
+    /// resolved auth happens to be Codex/ChatGPT-backend, independent of
+    /// `host_owned_codex_apps_enabled` in `codex_mcp` (which hard-disables the
+    /// separate host-owned `codex_apps` MCP server). kimcli must never use
+    /// OpenAI/ChatGPT auth to phone OpenAI-hosted infrastructure — this is the
+    /// same standing product constraint, applied to this gate's own caller set:
+    /// `core::session::turn_context` (exposes the Apps tool), `chatgpt::connectors`
+    /// (`list_all_connectors_with_options`/`list_cached_all_connectors`, which make a
+    /// real HTTP GET to `chatgpt.com` when this returns true), and the app-server
+    /// apps/plugins request processors. So this function is hard-pinned to `false`
+    /// regardless of the `Apps` feature flag or `has_chatgpt_auth`, for every one of
+    /// those callers — this is the single choke point all of them share, so
+    /// overriding it here is sufficient; no call site needs a matching change.
+    /// Deliberately kept as a small, clearly-commented override (not a
+    /// deleted/renamed function) so an upstream rebase's diff on this file stays
+    /// readable and this override is easy to re-apply or reconsider.
+    ///
+    /// `has_chatgpt_auth` is intentionally unused (kept in the signature so this
+    /// stays a drop-in replacement for every existing call site).
+    pub fn apps_enabled_for_auth(&self, _has_chatgpt_auth: bool) -> bool {
+        false
     }
 
     pub fn use_legacy_landlock(&self) -> bool {
