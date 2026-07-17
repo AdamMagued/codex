@@ -1294,7 +1294,14 @@ enabled = true
 }
 
 #[tokio::test]
-async fn remote_global_catalog_ignores_local_curated_plugins() {
+async fn remote_global_catalog_stays_inactive_even_with_codex_backend_auth() {
+    // kimcli-branding hard-disables `remote_global_catalog_active` unconditionally (see
+    // its doc comment in manager.rs): even with Chatgpt-backend auth present and remote
+    // installed plugins cached -- the most permissive upstream combination, which used
+    // to make this exercise the "ignore local curated, prefer remote" branch -- local
+    // curated plugins must be kept and only genuinely remote-only plugins (no local
+    // curated equivalent) get merged in, exactly like the no-codex-backend-auth case
+    // covered by `remote_plugin_feature_keeps_local_curated_without_codex_backend`.
     let codex_home = TempDir::new().unwrap();
     write_file(
         &codex_home.path().join(CONFIG_TOML_FILE),
@@ -1336,8 +1343,9 @@ enabled = true
             .map(|plugin| plugin.config_name.clone())
             .collect::<Vec<_>>(),
         vec![
+            "calendar@openai-curated".to_string(),
             "linear@openai-api-curated".to_string(),
-            "linear@openai-curated-remote".to_string(),
+            "linear@openai-curated".to_string(),
             "remote-only@openai-curated-remote".to_string(),
         ]
     );

@@ -504,8 +504,29 @@ impl PluginsManager {
         }
     }
 
-    fn remote_global_catalog_active(&self, config: &PluginsConfigInput) -> bool {
-        config.remote_plugin_enabled && self.auth_mode().is_some_and(AuthMode::uses_codex_backend)
+    /// kimcli-branding override: unconditionally disabled.
+    ///
+    /// Upstream this gate is `config.remote_plugin_enabled &&
+    /// self.auth_mode().is_some_and(AuthMode::uses_codex_backend)` -- i.e. it makes the
+    /// OpenAI-hosted "remote global" plugin catalog authoritative (dropping locally
+    /// configured `openai-curated` plugins in favor of whatever the ChatGPT-backend
+    /// account has installed remotely) whenever a resolved auth happens to be
+    /// Codex/ChatGPT-backend. Every caller of this method
+    /// (`plugin_skill_snapshots_for_config`, `plugins_for_config_with_force_reload`,
+    /// twice more below) funnels into `load_plugins_from_layer_stack`, which is the
+    /// single choke point that decides whether `core_plugins::remote`'s real HTTP calls
+    /// to `chatgpt_base_url` (suggest/list/install/uninstall/workspace-shared) become
+    /// authoritative for the user's effective plugin set. kimcli must never let OpenAI's
+    /// hosted catalog override local configuration, so this is hard-pinned to `false`
+    /// regardless of `config.remote_plugin_enabled` or the resolved auth mode, for every
+    /// caller -- this is the single choke point they all share, so overriding it here is
+    /// sufficient; no call site needs a matching change. Deliberately kept as a small,
+    /// clearly-commented override (not a deleted/renamed method) so an upstream rebase's
+    /// diff on this file stays readable and this override is easy to re-apply or
+    /// reconsider. `config` is intentionally unused (kept in the signature so this stays
+    /// a drop-in replacement for every existing call site).
+    fn remote_global_catalog_active(&self, _config: &PluginsConfigInput) -> bool {
+        false
     }
 
     pub fn set_analytics_events_client(&self, analytics_events_client: AnalyticsEventsClient) {
