@@ -30,15 +30,28 @@ async fn contributes_hosted_plugin_runtime_without_an_executor() -> TestResult {
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
     let manager = installed_manager(&config);
 
-    let servers = manager.effective_servers(&config, Some(&auth)).await;
-    let server = servers
+    // Pre-auth-gate: the extension still registers the hosted plugin runtime
+    // in the catalog with the expected URL — that registration/config-shape
+    // logic is unrelated to (and unaffected by) kimcli's apps hard-disable.
+    let runtime_servers = manager.runtime_servers(&config).await;
+    let server = runtime_servers
         .get(CODEX_APPS_MCP_SERVER_NAME)
-        .and_then(|server| server.configured_config())
         .ok_or("hosted plugin runtime should be contributed as a configured server")?;
     let McpServerTransportConfig::StreamableHttp { url, .. } = &server.transport else {
         panic!("hosted plugin runtime should use streamable HTTP");
     };
     assert_eq!(url, "https://chatgpt.com/backend-api/ps/mcp");
+
+    // kimcli-branding: `effective_servers` applies the auth gate, which
+    // kimcli hard-disables unconditionally (see
+    // `codex_mcp::host_owned_codex_apps_enabled`) — even with the apps
+    // feature on and ChatGPT-backend auth present, the hosted server must
+    // never reach the runtime-effective set.
+    let effective = manager.effective_servers(&config, Some(&auth)).await;
+    assert!(
+        !effective.contains_key(CODEX_APPS_MCP_SERVER_NAME),
+        "kimcli must never materialize the host-owned codex_apps MCP server"
+    );
 
     Ok(())
 }
@@ -59,15 +72,22 @@ async fn runtime_overlay_preserves_disabled_server() -> TestResult {
         ])
         .build()
         .await?;
-    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let _auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
     let manager = installed_manager(&config);
 
-    let servers = manager.effective_servers(&config, Some(&auth)).await;
+    // This asserts the config-level `enabled: false` override survives the
+    // catalog/runtime overlay merge — a concern unrelated to (and checked
+    // before) kimcli's unconditional apps auth-gate, so it is checked against
+    // `runtime_servers` (pre-auth-gate) rather than `effective_servers`
+    // (which kimcli always empties of `codex_apps`; see
+    // `contributes_hosted_plugin_runtime_without_an_executor` for that
+    // assertion).
+    let servers = manager.runtime_servers(&config).await;
     let server = servers
         .get(CODEX_APPS_MCP_SERVER_NAME)
         .ok_or("hosted plugin runtime should remain configured")?;
 
-    assert!(!server.enabled());
+    assert!(!server.enabled);
     Ok(())
 }
 
@@ -91,15 +111,25 @@ async fn default_fallback_overwrites_reserved_config_without_an_extension() -> T
         config.codex_home.to_path_buf(),
     )));
 
-    let servers = manager.effective_servers(&config, Some(&auth)).await;
-    let server = servers
+    // Pre-auth-gate config-shape check (unaffected by kimcli's apps
+    // hard-disable): the legacy fallback registration wins over the
+    // user-configured URL when no extension is installed.
+    let runtime_servers = manager.runtime_servers(&config).await;
+    let server = runtime_servers
         .get(CODEX_APPS_MCP_SERVER_NAME)
         .and_then(|server| server.configured_config())
-        .ok_or("default Apps MCP should be present")?;
+        .ok_or("legacy Apps MCP should be present")?;
     let McpServerTransportConfig::StreamableHttp { url, .. } = &server.transport else {
         panic!("default Apps MCP should use streamable HTTP");
     };
     assert_eq!(url, "https://chatgpt.com/backend-api/ps/mcp");
+
+    // kimcli-branding: the auth-gated effective set must never include it.
+    let effective = manager.effective_servers(&config, Some(&auth)).await;
+    assert!(
+        !effective.contains_key(CODEX_APPS_MCP_SERVER_NAME),
+        "kimcli must never materialize the host-owned codex_apps MCP server"
+    );
 
     Ok(())
 }
