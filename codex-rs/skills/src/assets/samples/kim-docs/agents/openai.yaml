@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kim Docs"
+  short_description: "Answer questions about Kim/kimcli itself from a bundled, offline manual"
+  default_prompt: "Use Kim Docs to answer questions about what Kim is, how kimcli/kim tui works, or Kim's own capabilities and limitations."
