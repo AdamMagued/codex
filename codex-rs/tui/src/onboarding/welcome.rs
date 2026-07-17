@@ -95,7 +95,7 @@ impl WidgetRef for &WelcomeWidget {
             "  ".into(),
             "Welcome to ".into(),
             "Kim".bold(),
-            ", OpenAI's command-line coding agent".into(),
+            ", a command-line coding agent".into(),
         ]));
 
         Paragraph::new(lines)

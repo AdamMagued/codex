@@ -2544,7 +2544,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
 
 fn print_completion(cmd: CompletionCommand) {
     let mut app = MultitoolCli::command();
-    let name = "codex";
+    let name = "kimcli";
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
 }
 
