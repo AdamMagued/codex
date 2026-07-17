@@ -289,6 +289,12 @@ fn codex_apps_server_config_forwards_configured_product_sku_header() {
 async fn effective_mcp_servers_preserve_runtime_servers() {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let mut config = test_mcp_config(codex_home.path().to_path_buf());
+    // Deliberately still set `apps_enabled = true` with ChatGPT-backend auth
+    // present: kimcli-branding hard-disables the host-owned `codex_apps` MCP
+    // server unconditionally (see `host_owned_codex_apps_enabled`), so this
+    // exercises that even the most permissive upstream config/auth
+    // combination cannot resurrect it, while non-apps user/configured
+    // servers are unaffected.
     config.apps_enabled = true;
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
 
@@ -360,9 +366,11 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
     let docs = effective
         .get("docs")
         .expect("configured server should exist");
-    let codex_apps = effective
-        .get(CODEX_APPS_MCP_SERVER_NAME)
-        .expect("codex apps server should exist");
+    assert!(
+        !effective.contains_key(CODEX_APPS_MCP_SERVER_NAME),
+        "kimcli must never materialize the host-owned codex_apps MCP server, \
+         even with apps_enabled=true and ChatGPT-backend auth present"
+    );
 
     let sample = sample
         .configured_config()
@@ -370,9 +378,6 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
     let docs = docs
         .configured_config()
         .expect("configured server should retain transport");
-    let codex_apps = codex_apps
-        .configured_config()
-        .expect("codex apps should use configured transport");
 
     match &sample.transport {
         McpServerTransportConfig::StreamableHttp { url, .. } => {
@@ -383,12 +388,6 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
     match &docs.transport {
         McpServerTransportConfig::StreamableHttp { url, .. } => {
             assert_eq!(url, "https://docs.example/mcp");
-        }
-        other => panic!("expected streamable http transport, got {other:?}"),
-    }
-    match &codex_apps.transport {
-        McpServerTransportConfig::StreamableHttp { url, .. } => {
-            assert_eq!(url, "https://chatgpt.com/backend-api/wham/apps");
         }
         other => panic!("expected streamable http transport, got {other:?}"),
     }

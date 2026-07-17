@@ -238,8 +238,30 @@ impl ToolPluginProvenance {
     }
 }
 
-pub fn host_owned_codex_apps_enabled(config: &McpConfig, auth: Option<&CodexAuth>) -> bool {
-    config.apps_enabled && auth.is_some_and(CodexAuth::uses_codex_backend)
+/// kimcli-branding override: unconditionally disabled.
+///
+/// Upstream this gate is `config.apps_enabled && auth.is_some_and(CodexAuth::uses_codex_backend)`
+/// — i.e. it starts the host-owned `codex_apps` MCP server (which talks to
+/// `chatgpt.com`) whenever the resolved `CODEX_HOME` happens to contain a
+/// ChatGPT/Codex-backend `auth.json`. kimcli must never use OpenAI/ChatGPT
+/// auth (standing product constraint), and must never phone
+/// OpenAI-hosted infrastructure at all, even as defense-in-depth against a
+/// stray upstream `auth.json` sitting in a user's home directory (which is
+/// exactly what triggered a `codex_apps` "token_expired" MCP startup failure
+/// against a real user's leftover ChatGPT credentials). So this function is
+/// hard-pinned to `false` regardless of `config.apps_enabled` or `auth`, for
+/// every caller (`effective_mcp_servers_from_configured` below, plus
+/// `core::connectors`, `core::session::session`, and `core::session::mcp`) —
+/// this is the single choke point all of them share, so overriding it here
+/// is sufficient; no other file needs a matching change. Deliberately kept
+/// as a small, clearly-commented override (not a deleted/renamed function)
+/// so an upstream rebase's diff on this file stays readable and this
+/// override is easy to re-apply or reconsider.
+///
+/// `config`/`auth` are intentionally unused (kept in the signature so this
+/// stays a drop-in replacement for every existing call site).
+pub fn host_owned_codex_apps_enabled(_config: &McpConfig, _auth: Option<&CodexAuth>) -> bool {
+    false
 }
 
 pub fn configured_mcp_servers(config: &McpConfig) -> HashMap<String, McpServerConfig> {
