@@ -11,7 +11,6 @@ Use /fork to branch the current chat into a new thread.
 Use /side to start a side conversation in a temporary fork without polluting the main thread.
 Use /init to create an AGENTS.md with project-specific guidance.
 Use /mcp to list configured MCP tools.
-Run `kimcli app` to open Codex Desktop (it installs on macOS if needed).
 Use /personality to customize how Kim communicates.
 Use /rename to rename your threads for easier thread resuming.
 You can run any shell command from Kim using `!` (e.g. `!ls`)

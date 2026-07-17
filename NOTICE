@@ -37,4 +37,12 @@ Modifications made in this fork, relative to upstream Codex CLI 0.144.3:
     always refuses with a message pointing to
     scripts/install_kimcli.sh in the kim repo, exiting non-zero.
 
+  * Desktop-app install/launch permanently disabled: kimcli never downloads
+    or installs OpenAI's Codex Desktop application. The `kimcli app`
+    subcommand (which upstream downloads and installs Codex Desktop from
+    OpenAI's CDN on macOS, or from the Microsoft Store on Windows) always
+    refuses, exiting non-zero, on every platform; the underlying
+    installer/launcher code has been removed. Kim's own, separate desktop
+    app is not installed or launched by kimcli.
+
 No other functional changes are made by this rebrand.

@@ -3,14 +3,9 @@ use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
 
-const IS_MACOS: bool = cfg!(target_os = "macos");
-const IS_WINDOWS: bool = cfg!(target_os = "windows");
-
-const APP_TOOLTIP: &str = "Try the **Codex Desktop** app. Run 'kimcli app' to open it.";
 const FAST_TOOLTIP: &str =
     "*New* Use **/fast** to enable our fastest inference with increased plan usage.";
-const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codex Desktop** app. Run 'kimcli app' to open it.";
-const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Kim.";
+const OTHER_TOOLTIP: &str = "*New* Build faster with Kim.";
 const FREE_GO_TOOLTIP: &str = "*New* Build faster with Kim.";
 
 const RAW_TOOLTIPS: &str = include_str!("../tooltips.txt");
@@ -19,15 +14,7 @@ lazy_static! {
     static ref TOOLTIPS: Vec<&'static str> = RAW_TOOLTIPS
         .lines()
         .map(str::trim)
-        .filter(|line| {
-            if line.is_empty() || line.starts_with('#') {
-                return false;
-            }
-            if !IS_MACOS && !IS_WINDOWS && line.contains("kimcli app") {
-                return false;
-            }
-            true
-        })
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect();
     static ref ALL_TOOLTIPS: Vec<&'static str> = {
         let mut tips = Vec::new();
@@ -70,12 +57,7 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
                 return Some(FREE_GO_TOOLTIP.to_string());
             }
             _ => {
-                let tooltip = if IS_MACOS {
-                    OTHER_TOOLTIP
-                } else {
-                    OTHER_TOOLTIP_NON_MAC
-                };
-                return Some(tooltip.to_string());
+                return Some(OTHER_TOOLTIP.to_string());
             }
         }
     }
@@ -83,24 +65,19 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
     pick_tooltip(&mut rng).map(str::to_string)
 }
 
-fn paid_app_tooltip() -> Option<&'static str> {
-    if IS_MACOS || IS_WINDOWS {
-        Some(APP_TOOLTIP)
-    } else {
-        None
-    }
-}
-
 /// Paid users spend most startup sessions in a dedicated promo slot rather than the
-/// generic random tip pool. Keep this business logic explicit: we currently split
-/// that slot between the app promo and Fast mode, but suppress the Fast promo once
-/// the user already has Fast mode enabled.
+/// generic random tip pool. This used to alternate between a desktop-app-install promo
+/// and the Fast-mode promo; kimcli does not bundle or install a desktop app (see
+/// `app_cmd::run_app`), so there is no app promo to show anymore. This keeps the same
+/// coin-flip shape (still suppressed once the user already has Fast mode enabled) so
+/// the slot now simply falls through to the generic tip pool in `get_tooltip` instead
+/// of showing an app promo.
 fn pick_paid_tooltip<R: Rng + ?Sized>(
     rng: &mut R,
     fast_mode_enabled: bool,
 ) -> Option<&'static str> {
     if fast_mode_enabled || rng.random_bool(0.5) {
-        paid_app_tooltip()
+        None
     } else {
         Some(FAST_TOOLTIP)
     }
@@ -337,7 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn paid_tooltip_pool_rotates_between_promos() {
+    fn paid_tooltip_pool_rotates_between_fast_promo_and_fallthrough() {
+        // kimcli has no desktop-app promo (see `pick_paid_tooltip`'s doc comment), so the
+        // paid-user promo slot now only ever yields the Fast tip or `None` (which falls
+        // through to the generic tip pool in `get_tooltip`) -- never a third value.
         let mut seen = std::collections::BTreeSet::new();
         for seed in 0..32 {
             let mut rng = StdRng::seed_from_u64(seed);
@@ -346,7 +326,7 @@ mod tests {
             ));
         }
 
-        let expected = std::collections::BTreeSet::from([paid_app_tooltip(), Some(FAST_TOOLTIP)]);
+        let expected = std::collections::BTreeSet::from([None, Some(FAST_TOOLTIP)]);
         assert_eq!(seen, expected);
     }
 
@@ -358,7 +338,7 @@ mod tests {
             seen.insert(pick_paid_tooltip(&mut rng, /*fast_mode_enabled*/ true));
         }
 
-        let expected = std::collections::BTreeSet::from([paid_app_tooltip()]);
+        let expected = std::collections::BTreeSet::from([None]);
         assert_eq!(seen, expected);
         assert!(!seen.contains(&Some(FAST_TOOLTIP)));
     }
