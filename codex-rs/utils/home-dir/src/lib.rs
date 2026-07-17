@@ -4,7 +4,22 @@ use std::path::PathBuf;
 
 /// Returns the path to the Codex configuration directory, which can be
 /// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// `~/.kim/codex`.
+///
+/// kimcli-branding override: upstream codex defaults to `~/.codex`, which on a
+/// machine that also has a real upstream `codex`/ChatGPT install would make
+/// kimcli silently read (and, if anything ever wrote to it, corrupt) that
+/// install's `config.toml`/`auth.json`/sessions. kimcli must never touch a
+/// user's real OpenAI/ChatGPT credentials or state (see
+/// `host_owned_codex_apps_enabled` in `codex-mcp` for the matching auth-side
+/// guard), so its default home lives under the `~/.kim` namespace kim-pro's
+/// launcher already owns (`~/.kim/sessions`, `~/.kim/bin`,
+/// `~/.kim/cli-config.json`, ...), in a `codex` subdirectory (this crate and
+/// its on-disk layout — `config.toml`, `auth.json`, rollouts — are still
+/// "codex"-shaped; only the *location* changes). `kim tui` does not set
+/// `CODEX_HOME` when it spawns kimcli (see kim-pro's
+/// `cli/src/commands/tui/env.rs`), so this default applies to both `kim tui`
+/// and a bare `kimcli` invocation alike.
 ///
 /// - If `CODEX_HOME` is set, the value must exist and be a directory. The
 ///   value will be canonicalized and this function will Err otherwise.
@@ -56,7 +71,10 @@ fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<Abs
                     "Could not find home directory",
                 )
             })?;
-            p.push(".codex");
+            // kimcli-branding: `~/.kim/codex`, not upstream's `~/.codex` — see
+            // the module doc comment above for why.
+            p.push(".kim");
+            p.push("codex");
             AbsolutePathBuf::from_absolute_path(p)
         }
     }
@@ -123,11 +141,15 @@ mod tests {
     }
 
     #[test]
-    fn find_codex_home_without_env_uses_default_home_dir() {
+    fn find_codex_home_without_env_uses_kimcli_default_home_dir() {
+        // kimcli-branding: the no-env-var default is `~/.kim/codex`, not
+        // upstream codex's `~/.codex` — kimcli must never default onto a
+        // real upstream codex install's home. See the module doc comment.
         let resolved =
             find_codex_home_from_env(/*codex_home_env*/ None).expect("default CODEX_HOME");
         let mut expected = home_dir().expect("home dir");
-        expected.push(".codex");
+        expected.push(".kim");
+        expected.push("codex");
         let expected = AbsolutePathBuf::from_absolute_path(expected).expect("absolute home");
         assert_eq!(resolved, expected);
     }
