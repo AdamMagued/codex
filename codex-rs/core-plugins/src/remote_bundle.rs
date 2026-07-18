@@ -6,25 +6,24 @@ use crate::store::PluginStore;
 use crate::store::PluginStoreError;
 use crate::store::error_context_sub_error_type;
 use crate::store::validate_plugin_version_segment;
-use codex_login::default_client::build_reqwest_client;
 use codex_plugin::PluginId;
 use codex_plugin::PluginIdError;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::find_plugin_manifest_path;
-use reqwest::Response;
 use reqwest::StatusCode;
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
 use url::Host;
 use url::Url;
 
-const REMOTE_PLUGIN_BUNDLE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+// kimcli-branding: `build_reqwest_client`, `reqwest::Response`, `REMOTE_PLUGIN_BUNDLE_DOWNLOAD_TIMEOUT`,
+// and `REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES` were removed -- they only existed to support
+// `download_remote_plugin_bundle_with_limit`'s real request/response handling, which is now
+// pinned to never run (see that function's doc comment below).
 const REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
-const REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES: u64 = 8 * 1024;
 const REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES: u64 = 250 * 1024 * 1024;
 const REMOTE_PLUGIN_INSTALL_STAGING_DIR: &str = "plugins/.remote-plugin-install-staging";
 #[cfg(debug_assertions)]
@@ -90,6 +89,16 @@ pub enum RemotePluginBundleInstallError {
         source: reqwest::Error,
     },
 
+    /// kimcli-branding: returned unconditionally by `download_remote_plugin_bundle_with_limit`
+    /// (see its doc comment) instead of ever building a request. Every code path that could
+    /// reach this function is already unreachable via the plugin-marketplace network pin (see
+    /// remote.rs/remote_legacy.rs/remote/share.rs's `NetworkDisabled` variants and
+    /// `startup_sync.rs`'s `CURATED_PLUGINS_SYNC_NETWORK_DISABLED`), but this function is pinned
+    /// independently too, matching this whole rebrand's "pin the leaf, don't trust the caller"
+    /// principle.
+    #[error("kimcli does not issue plugin bundle download requests")]
+    NetworkDisabled,
+
     #[error("remote plugin bundle download from {url} failed with status {status}: {body}")]
     DownloadStatus {
         url: String,
@@ -150,6 +159,7 @@ impl RemotePluginBundleInstallError {
             | Self::DownloadTooLarge { .. }
             | Self::UnsupportedBundleDownloadFinalUrl { .. }
             | Self::ExtractedBundleTooLarge { .. }
+            | Self::NetworkDisabled
             | Self::InvalidBundle(_) => None,
         }
     }
@@ -286,99 +296,30 @@ pub(crate) async fn download_and_extract_remote_plugin_bundle_to_path(
     })?
 }
 
+/// kimcli-branding: this is the sole `build_reqwest_client()`/`.send()` leaf in this module --
+/// it downloads a plugin bundle archive from `bundle_download_url`, a URL supplied by whichever
+/// caller validated it (`validate_remote_plugin_bundle`, above). Its two callers
+/// (`download_and_install_remote_plugin_bundle`, `download_and_extract_remote_plugin_bundle_to_path`)
+/// are already unreachable in production: every code path that could produce a real
+/// `ValidatedRemotePluginBundle` goes through the plugin-marketplace network pin (see
+/// remote.rs/remote_legacy.rs/remote/share.rs's `NetworkDisabled` variants) or the curated
+/// plugins sync pin (`startup_sync.rs`'s `CURATED_PLUGINS_SYNC_NETWORK_DISABLED`). Rather than
+/// trust that upstream reachability analysis, this function is pinned directly too --
+/// short-circuiting before ever building a client -- matching the "pin the leaf, don't trust the
+/// caller" principle used throughout this rebrand.
 async fn download_remote_plugin_bundle_with_limit(
-    bundle_download_url: &str,
-    max_bytes: u64,
+    _bundle_download_url: &str,
+    _max_bytes: u64,
 ) -> Result<Vec<u8>, RemotePluginBundleInstallError> {
-    let client = build_reqwest_client();
-    let response = client
-        .get(bundle_download_url)
-        .timeout(REMOTE_PLUGIN_BUNDLE_DOWNLOAD_TIMEOUT)
-        .send()
-        .await
-        .map_err(|source| RemotePluginBundleInstallError::DownloadRequest {
-            url: bundle_download_url.to_string(),
-            source,
-        })?;
-
-    let final_url = response.url().clone();
-    // reqwest may already have followed redirects here. For backend-issued bundle URLs, keep the
-    // shared client policy and fail unsupported final schemes before caching.
-    if !is_allowed_bundle_download_url(&final_url, allow_test_loopback_http_bundle_downloads()) {
-        return Err(
-            RemotePluginBundleInstallError::UnsupportedBundleDownloadFinalUrl {
-                url: bundle_download_url.to_string(),
-                final_url: final_url.to_string(),
-            },
-        );
-    }
-
-    let url = final_url.to_string();
-    let status = response.status();
-    if !status.is_success() {
-        let mut response = response;
-        let mut body = Vec::new();
-        let mut body_truncated = false;
-        let mut body_read_error = None;
-        loop {
-            let chunk = match response.chunk().await {
-                Ok(Some(chunk)) => chunk,
-                Ok(None) => break,
-                Err(source) => {
-                    body_read_error = Some(source);
-                    break;
-                }
-            };
-            let remaining = REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES as usize - body.len();
-            if chunk.len() > remaining {
-                body.extend_from_slice(&chunk[..remaining]);
-                body_truncated = true;
-                break;
-            }
-            body.extend_from_slice(&chunk);
-        }
-
-        let mut body = String::from_utf8_lossy(&body).into_owned();
-        if body_truncated {
-            body.push_str(&format!(
-                "\n[response body truncated after {REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES} bytes]"
-            ));
-        }
-        if let Some(source) = body_read_error {
-            body.push_str(&format!("\n[failed to read response body: {source}]"));
-        }
-        return Err(RemotePluginBundleInstallError::DownloadStatus { url, status, body });
-    }
-
-    read_response_body_with_limit(response, &url, max_bytes).await
+    Err(RemotePluginBundleInstallError::NetworkDisabled)
 }
 
-async fn read_response_body_with_limit(
-    mut response: Response,
-    url: &str,
-    max_bytes: u64,
-) -> Result<Vec<u8>, RemotePluginBundleInstallError> {
-    if let Some(content_length) = response.content_length() {
-        enforce_download_size_limit(url, content_length, max_bytes)?;
-    }
-
-    let mut body = Vec::new();
-    while let Some(chunk) =
-        response
-            .chunk()
-            .await
-            .map_err(|source| RemotePluginBundleInstallError::DownloadBody {
-                url: url.to_string(),
-                source,
-            })?
-    {
-        let next_len = body.len() as u64 + chunk.len() as u64;
-        enforce_download_size_limit(url, next_len, max_bytes)?;
-        body.extend_from_slice(&chunk);
-    }
-
-    Ok(body)
-}
+// kimcli-branding: `read_response_body_with_limit` was removed entirely -- it was the
+// content-length/streaming-limit enforcement for an in-flight download response, had zero
+// remaining callers once `download_remote_plugin_bundle_with_limit` was pinned above, and had no
+// independent unit test coverage of its own. `enforce_download_size_limit` below is kept: it is
+// pure local arithmetic (no network) with its own direct unit test
+// (`download_size_limit_rejects_oversized_bundle`).
 
 fn enforce_download_size_limit(
     url: &str,

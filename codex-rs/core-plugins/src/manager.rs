@@ -51,7 +51,6 @@ use crate::remote_legacy::RemotePluginMutationError;
 use crate::startup_sync::curated_plugins_api_marketplace_path;
 use crate::startup_sync::curated_plugins_repo_path;
 use crate::startup_sync::read_curated_plugins_sha;
-use crate::startup_sync::sync_openai_plugins_repo;
 use crate::store::PluginInstallResult as StorePluginInstallResult;
 use crate::store::PluginStore;
 use crate::store::PluginStoreError;
@@ -91,15 +90,12 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::OnceCell;
 use tokio::sync::Semaphore;
 use tracing::instrument;
 use tracing::warn;
 
-static CURATED_REPO_SYNC_STARTED: AtomicBool = AtomicBool::new(false);
 const FEATURED_PLUGIN_IDS_CACHE_TTL: std::time::Duration =
     std::time::Duration::from_secs(60 * 60 * 3);
 
@@ -2310,46 +2306,23 @@ impl PluginsManager {
         }
     }
 
-    fn start_curated_repo_sync(self: &Arc<Self>) {
-        if CURATED_REPO_SYNC_STARTED.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let manager = Arc::clone(self);
-        let codex_home = self.codex_home.clone();
-        if let Err(err) = std::thread::Builder::new()
-            .name("plugins-curated-repo-sync".to_string())
-            .spawn(
-                move || match sync_openai_plugins_repo(codex_home.as_path()) {
-                    Ok(curated_plugin_version) => {
-                        let configured_curated_plugin_ids =
-                            configured_curated_plugin_ids_from_codex_home(codex_home.as_path());
-                        match refresh_curated_plugin_cache(
-                            codex_home.as_path(),
-                            &curated_plugin_version,
-                            &configured_curated_plugin_ids,
-                        ) {
-                            Ok(cache_refreshed) => {
-                                manager
-                                    .clear_caches_after_marketplace_source_refresh(cache_refreshed);
-                            }
-                            Err(err) => {
-                                manager.clear_cache();
-                                CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
-                                warn!("failed to refresh curated plugin cache after sync: {err}");
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
-                        warn!("failed to sync curated plugins repo: {err}");
-                    }
-                },
-            )
-        {
-            CURATED_REPO_SYNC_STARTED.store(false, Ordering::SeqCst);
-            warn!("failed to start curated plugins repo sync task: {err}");
-        }
-    }
+    /// kimcli-branding: upstream this spawned a background `plugins-curated-repo-sync` thread on
+    /// every kimcli launch (see `maybe_start_plugin_startup_tasks_for_config`, gated only by
+    /// `plugins_enabled` and NOT using the remote global catalog -- i.e. the default path for
+    /// most configs, no auth or opt-in required) that called
+    /// `crate::startup_sync::sync_openai_plugins_repo`, which used to `git clone`/`git
+    /// ls-remote` `https://github.com/openai/plugins.git` and fall back to `api.github.com`/
+    /// `chatgpt.com` HTTP requests. `sync_openai_plugins_repo` itself is now pinned (see
+    /// startup_sync.rs's `CURATED_PLUGINS_SYNC_NETWORK_DISABLED`) and always returns
+    /// `Ok(String::new())` without doing any of that -- but leaving this thread spawn in place
+    /// would still fire on every launch and then immediately fail downstream: with `.tmp/plugins`
+    /// never populated, `refresh_curated_plugin_cache` cannot find a local curated marketplace
+    /// manifest to load, so every startup would spawn a thread, hit that error, clear the plugin
+    /// cache, and log a warning for a permanently-disabled feature. Rather than accept that
+    /// startup noise (or invent a synthetic marketplace file just to keep this thread quiet),
+    /// this function is pinned directly to do nothing -- no thread, no warning spam, no
+    /// dead work -- which is the cleaner of the two options the network-level pin left open.
+    fn start_curated_repo_sync(self: &Arc<Self>) {}
 
     async fn run_remote_installed_plugins_cache_refresh_loop(self: Arc<Self>) {
         loop {

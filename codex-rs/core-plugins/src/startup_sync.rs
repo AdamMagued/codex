@@ -1,37 +1,44 @@
-use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::process::Output;
-use std::process::Stdio;
 use std::time::Duration;
 
-use codex_otel::CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC;
-use codex_otel::CURATED_PLUGINS_STARTUP_SYNC_METRIC;
 use reqwest::Client;
-use serde::Deserialize;
-use tempfile::TempDir;
 use tracing::warn;
-use zip::ZipArchive;
 
-use codex_login::default_client::build_reqwest_client;
+// kimcli-branding: `build_reqwest_client` and the GitHub/backup-archive JSON response structs
+// (`GitHubRepositorySummary`, `GitHubGitRefSummary`, `GitHubGitRefObject`,
+// `CuratedPluginsBackupArchiveResponse`) were removed entirely -- every function that used them
+// is pinned below to return before ever constructing a client or parsing a response. See
+// CURATED_PLUGINS_SYNC_NETWORK_DISABLED.
 
-const GITHUB_API_BASE_URL: &str = "https://api.github.com";
-const GITHUB_API_ACCEPT_HEADER: &str = "application/vnd.github+json";
-const GITHUB_API_VERSION_HEADER: &str = "2022-11-28";
-const CURATED_PLUGINS_BACKUP_ARCHIVE_API_URL: &str =
-    "https://chatgpt.com/backend-api/plugins/export/curated";
-const OPENAI_PLUGINS_OWNER: &str = "openai";
-const OPENAI_PLUGINS_REPO: &str = "plugins";
-const OPENAI_PLUGINS_GIT_URL: &str = "https://github.com/openai/plugins.git";
+// kimcli-branding: this module is upstream's "curated plugins" auto-fire startup sync -- on
+// every launch (see manager.rs's `start_curated_repo_sync`), unauthenticated, with no opt-in,
+// it used to `git ls-remote`/`git fetch` `https://github.com/openai/plugins.git`, fall back to
+// `https://api.github.com` REST calls, and fall back again to
+// `https://chatgpt.com/backend-api/plugins/export/curated`. That is exactly the class of
+// OpenAI-phoning behavior this whole rebrand exists to eliminate, and it is worse than the
+// plugin-marketplace paths pinned earlier because it fires on startup with no auth and no user
+// action at all. Every function in this file that would clone/fetch `openai/plugins.git` or
+// send an HTTP request to api.github.com/chatgpt.com is pinned below to return this error (or,
+// for the repo-sync orchestrators, an empty/"nothing synced" success) before doing any of that
+// work -- independently of its caller, matching the same principle applied to the plugin
+// marketplace network pin. See also manager.rs's `start_curated_repo_sync`, which no longer
+// spawns the sync thread at all.
+const CURATED_PLUGINS_SYNC_NETWORK_DISABLED: &str = "kimcli does not sync curated plugins from \
+    openai/plugins.git, api.github.com, or chatgpt.com (curated plugin sync is disabled)";
+
+// kimcli-branding: kept only because `#[ignore]`d tests in startup_sync_tests.rs still reference
+// it directly (see `sync_openai_plugins_repo_via_git_succeeds_with_local_rewritten_remote`);
+// every real caller was pinned above.
+#[allow(dead_code)]
 const CURATED_PLUGINS_FETCH_REF: &str = "refs/codex/curated-sync";
 const CURATED_PLUGINS_RELATIVE_DIR: &str = ".tmp/plugins";
 const CURATED_PLUGINS_SHA_FILE: &str = ".tmp/plugins.sha";
-const CURATED_PLUGINS_SYNC_LOCK_FILE: &str = ".tmp/plugins.sync.lock";
-const CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION: &str = "export-backup";
-const CURATED_PLUGINS_GIT_TIMEOUT: Duration = Duration::from_secs(30);
-const CURATED_PLUGINS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-const CURATED_PLUGINS_BACKUP_ARCHIVE_TIMEOUT: Duration = Duration::from_secs(30);
+// kimcli-branding: kept only for `remove_stale_curated_repo_temp_dirs`'s own unit test (its
+// production caller, `prepare_curated_repo_parent_and_temp_dir`, was deleted as dead code once
+// every sync entry point that used it was pinned).
+#[allow(dead_code)]
 // Keep this comfortably above a normal sync attempt so we do not race another Codex process.
 const CURATED_PLUGINS_STALE_TEMP_DIR_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 // These variables can redirect Git away from the repository selected by `-C`,
@@ -56,26 +63,6 @@ const REPOSITORY_LOCAL_GIT_ENVIRONMENT_VARIABLES: &[&str] = &[
     "GIT_WORK_TREE",
 ];
 
-#[derive(Debug, Deserialize)]
-struct GitHubRepositorySummary {
-    default_branch: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubGitRefSummary {
-    object: GitHubGitRefObject,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubGitRefObject {
-    sha: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CuratedPluginsBackupArchiveResponse {
-    download_url: String,
-}
-
 pub fn curated_plugins_repo_path(codex_home: &Path) -> PathBuf {
     codex_home.join(CURATED_PLUGINS_RELATIVE_DIR)
 }
@@ -92,277 +79,102 @@ fn curated_plugins_sha_path(codex_home: &Path) -> PathBuf {
     codex_home.join(CURATED_PLUGINS_SHA_FILE)
 }
 
-pub fn sync_openai_plugins_repo(codex_home: &Path) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    let git_binary = match which::which("git") {
-        Ok(git_path) => macos_git_binary_from_path(git_path, apple_developer_tools_available()),
-        Err(_) => None,
-    };
-    #[cfg(not(target_os = "macos"))]
-    let git_binary = Some(PathBuf::from("git"));
-
-    sync_openai_plugins_repo_with_transport_overrides(
-        codex_home,
-        git_binary.as_deref(),
-        GITHUB_API_BASE_URL,
-        CURATED_PLUGINS_BACKUP_ARCHIVE_API_URL,
-    )
+/// kimcli-branding: the public entry point for the curated-plugins startup sync. Upstream this
+/// resolved a git binary and delegated to `sync_openai_plugins_repo_with_transport_overrides`,
+/// which chains git -> GitHub REST -> chatgpt.com export-archive fallbacks, each capable of
+/// issuing a real network request. It never checks auth or any opt-in flag. This function's own
+/// production caller, manager.rs's `start_curated_repo_sync`, no longer even invokes it (see
+/// that function's doc comment) -- but this pin exists independently, so no future caller of
+/// `sync_openai_plugins_repo` itself can trigger a clone or HTTP request either. Returns the
+/// same `Ok(String)` shape upstream uses for "nothing to sync / already current" (an empty sha
+/// is never treated as an error by this function's own callers), not an `Err` that would spam
+/// warnings on every kimcli launch.
+pub fn sync_openai_plugins_repo(_codex_home: &Path) -> Result<String, String> {
+    Ok(String::new())
 }
 
+/// kimcli-branding: pinned along with every other function in this file that could reach
+/// `openai/plugins.git`, `api.github.com`, or `chatgpt.com` -- see
+/// CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Currently unreachable in production (its only
+/// production caller, `sync_openai_plugins_repo`, is pinned above and no longer calls it), but
+/// kept and independently pinned -- rather than deleted -- as a standing guard in case a future
+/// change reconnects a caller directly to this transport-fallback orchestrator. Still exercised
+/// directly by tests in startup_sync_tests.rs (marked `#[ignore]`, see this commit).
+#[allow(dead_code)]
 fn sync_openai_plugins_repo_with_transport_overrides(
-    codex_home: &Path,
-    git_binary: Option<&Path>,
-    api_base_url: &str,
-    backup_archive_api_url: &str,
+    _codex_home: &Path,
+    _git_binary: Option<&Path>,
+    _api_base_url: &str,
+    _backup_archive_api_url: &str,
 ) -> Result<String, String> {
-    let _file_guard = lock_curated_plugins_startup_sync(codex_home)?;
-
-    let git_sync_result = match git_binary {
-        Some(git_binary) => sync_openai_plugins_repo_via_git(codex_home, git_binary),
-        None => Err("git executable is unavailable".to_string()),
-    };
-
-    match git_sync_result {
-        Ok(remote_sha) => {
-            emit_curated_plugins_startup_sync_metric("git", "success");
-            emit_curated_plugins_startup_sync_final_metric("git", "success");
-            Ok(remote_sha)
-        }
-        Err(err) => {
-            emit_curated_plugins_startup_sync_metric("git", "failure");
-            warn!(
-                error = %err,
-                "git sync failed for curated plugin sync; falling back to GitHub HTTP"
-            );
-            match sync_openai_plugins_repo_via_http(codex_home, api_base_url) {
-                Ok(remote_sha) => {
-                    emit_curated_plugins_startup_sync_metric("http", "success");
-                    emit_curated_plugins_startup_sync_final_metric("http", "success");
-                    Ok(remote_sha)
-                }
-                Err(http_err) => {
-                    emit_curated_plugins_startup_sync_metric("http", "failure");
-                    if has_local_curated_plugins_snapshot(codex_home) {
-                        emit_curated_plugins_startup_sync_final_metric("http", "failure");
-                        warn!(
-                            error = %http_err,
-                            "GitHub HTTP sync failed for curated plugin sync; skipping export archive fallback because a local curated plugins snapshot already exists"
-                        );
-                        Err(format!(
-                            "git sync failed for curated plugin sync: {err}; GitHub HTTP sync failed for curated plugin sync: {http_err}; export archive fallback skipped because a local curated plugins snapshot already exists"
-                        ))
-                    } else {
-                        // The export archive is a lagging backup path. Only use it to bootstrap a
-                        // missing local curated snapshot, never to refresh an existing one.
-                        warn!(
-                            error = %http_err,
-                            backup_archive_api_url,
-                            "GitHub HTTP sync failed for curated plugin sync; falling back to export archive"
-                        );
-                        let result = sync_openai_plugins_repo_via_backup_archive(
-                            codex_home,
-                            backup_archive_api_url,
-                        );
-                        let status = if result.is_ok() { "success" } else { "failure" };
-                        emit_curated_plugins_startup_sync_metric("export_archive", status);
-                        emit_curated_plugins_startup_sync_final_metric("export_archive", status);
-                        result.map_err(|export_err| {
-                            format!(
-                                "git sync failed for curated plugin sync: {err}; GitHub HTTP sync failed for curated plugin sync: {http_err}; export archive sync failed for curated plugin sync: {export_err}"
-                            )
-                        })
-                    }
-                }
-            }
-        }
-    }
+    Ok(String::new())
 }
 
-fn lock_curated_plugins_startup_sync(codex_home: &Path) -> Result<File, String> {
-    let lock_path = codex_home.join(CURATED_PLUGINS_SYNC_LOCK_FILE);
-    std::fs::create_dir_all(codex_home.join(".tmp"))
-        .map_err(|err| format!("failed to create curated plugins sync directory: {err}"))?;
-    let lock_file = File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|err| format!("failed to open curated plugins sync lock: {err}"))?;
-    lock_file
-        .lock()
-        .map_err(|err| format!("failed to lock curated plugins sync: {err}"))?;
-    Ok(lock_file)
-}
-
+/// kimcli-branding: the git-clone/fetch transport for the curated plugins sync. Upstream this
+/// ran `git ls-remote`/`git fetch` against `https://github.com/openai/plugins.git`. See
+/// CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept (not deleted) as a standing guard and because it
+/// is still exercised directly by `#[ignore]`d tests in startup_sync_tests.rs.
+#[allow(dead_code)]
 fn sync_openai_plugins_repo_via_git(
-    codex_home: &Path,
-    git_binary: &Path,
+    _codex_home: &Path,
+    _git_binary: &Path,
 ) -> Result<String, String> {
-    let repo_path = curated_plugins_repo_path(codex_home);
-    let sha_path = codex_home.join(CURATED_PLUGINS_SHA_FILE);
-    let remote_sha = git_ls_remote_head_sha(git_binary)?;
-    let local_sha = read_local_git_or_sha_file(&repo_path, &sha_path, git_binary);
-
-    if local_sha.as_deref() == Some(remote_sha.as_str()) && repo_path.join(".git").is_dir() {
-        return Ok(remote_sha);
-    }
-
-    let staged_repo_dir = prepare_curated_repo_parent_and_temp_dir(&repo_path)?;
-    run_git_in_repo(
-        staged_repo_dir.path(),
-        git_binary,
-        &["init"],
-        "git init curated plugins repo",
-    )?;
-
-    if repo_path.join(".git").is_dir() {
-        fetch_curated_plugins_commit(&repo_path, &remote_sha, git_binary)?;
-        fetch_curated_plugins_commit_from_source(
-            staged_repo_dir.path(),
-            &repo_path,
-            CURATED_PLUGINS_FETCH_REF,
-            git_binary,
-        )?;
-    } else {
-        fetch_curated_plugins_commit(staged_repo_dir.path(), &remote_sha, git_binary)?;
-    }
-
-    reset_curated_plugins_checkout(staged_repo_dir.path(), git_binary)?;
-    let fetched_sha = git_head_sha(staged_repo_dir.path(), git_binary)?;
-    if fetched_sha != remote_sha {
-        return Err(format!(
-            "curated plugins fetch HEAD mismatch: expected {remote_sha}, got {fetched_sha}"
-        ));
-    }
-
-    ensure_marketplace_manifest_exists(staged_repo_dir.path())?;
-    activate_curated_repo(&repo_path, staged_repo_dir)?;
-    write_curated_plugins_sha(&sha_path, &remote_sha)?;
-    Ok(remote_sha)
+    Ok(String::new())
 }
 
+/// kimcli-branding: `git fetch`es `https://github.com/openai/plugins.git` directly. Pinned
+/// independently of its only real caller, `sync_openai_plugins_repo_via_git` (itself also pinned
+/// above), matching the "pin the leaf, don't trust the caller" principle used throughout this
+/// rebrand -- see CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even though it
+/// currently has no live caller.
+#[allow(dead_code)]
 fn fetch_curated_plugins_commit(
-    repo_path: &Path,
-    remote_sha: &str,
-    git_binary: &Path,
+    _repo_path: &Path,
+    _remote_sha: &str,
+    _git_binary: &Path,
 ) -> Result<(), String> {
-    fetch_curated_plugins_commit_from(
-        repo_path,
-        OPENAI_PLUGINS_GIT_URL.as_ref(),
-        remote_sha,
-        git_binary,
-        "git fetch curated plugins repo",
-    )
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-fn fetch_curated_plugins_commit_from_source(
-    repo_path: &Path,
-    source_repo_path: &Path,
-    remote_sha: &str,
-    git_binary: &Path,
-) -> Result<(), String> {
-    fetch_curated_plugins_commit_from(
-        repo_path,
-        source_repo_path,
-        remote_sha,
-        git_binary,
-        "git copy fetched curated plugins commit",
-    )
-}
-
+/// kimcli-branding: the shared `git fetch <source> <refspec>` executor. `source` is a generic
+/// `&Path` that upstream's own `fetch_curated_plugins_commit` populated with
+/// `https://github.com/openai/plugins.git` -- nothing in this function's own signature prevents
+/// a future caller from doing the same, so it is pinned here directly rather than trusting that
+/// only local sources are ever passed. See CURATED_PLUGINS_SYNC_NETWORK_DISABLED.
+#[allow(dead_code)]
 fn fetch_curated_plugins_commit_from(
-    repo_path: &Path,
-    source: &Path,
-    source_revision: &str,
-    git_binary: &Path,
-    context: &str,
+    _repo_path: &Path,
+    _source: &Path,
+    _source_revision: &str,
+    _git_binary: &Path,
+    _context: &str,
 ) -> Result<(), String> {
-    let fetch_refspec = format!("+{source_revision}:{CURATED_PLUGINS_FETCH_REF}");
-    let mut command = git_command(git_binary);
-    command
-        .arg("-C")
-        .arg(repo_path)
-        .args(["fetch", "--depth", "1", "--no-tags"])
-        .arg(source)
-        .arg(fetch_refspec);
-    let output = run_git_command_with_timeout(&mut command, context, CURATED_PLUGINS_GIT_TIMEOUT)?;
-    ensure_git_success(&output, context)
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-fn reset_curated_plugins_checkout(repo_path: &Path, git_binary: &Path) -> Result<(), String> {
-    run_git_in_repo(
-        repo_path,
-        git_binary,
-        &["reset", "--hard", CURATED_PLUGINS_FETCH_REF],
-        "git reset curated plugins repo",
-    )?;
-    run_git_in_repo(
-        repo_path,
-        git_binary,
-        &["clean", "-fdx"],
-        "git clean curated plugins repo",
-    )
-}
-
-fn run_git_in_repo(
-    repo_path: &Path,
-    git_binary: &Path,
-    args: &[&str],
-    context: &str,
-) -> Result<(), String> {
-    let mut command = git_command(git_binary);
-    command.arg("-C").arg(repo_path).args(args);
-    let output = run_git_command_with_timeout(&mut command, context, CURATED_PLUGINS_GIT_TIMEOUT)?;
-    ensure_git_success(&output, context)
-}
-
+/// kimcli-branding: the GitHub REST API transport for the curated plugins sync (the fallback
+/// used when git is unavailable). Upstream this called `api.github.com` via
+/// `fetch_curated_repo_remote_sha`/`fetch_curated_repo_zipball`. See
+/// CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard; still exercised directly by
+/// `#[ignore]`d tests in startup_sync_tests.rs.
+#[allow(dead_code)]
 fn sync_openai_plugins_repo_via_http(
-    codex_home: &Path,
-    api_base_url: &str,
+    _codex_home: &Path,
+    _api_base_url: &str,
 ) -> Result<String, String> {
-    let repo_path = curated_plugins_repo_path(codex_home);
-    let sha_path = codex_home.join(CURATED_PLUGINS_SHA_FILE);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("failed to create curated plugins sync runtime: {err}"))?;
-    let remote_sha = runtime.block_on(fetch_curated_repo_remote_sha(api_base_url))?;
-    let local_sha = read_sha_file(&sha_path);
-
-    if local_sha.as_deref() == Some(remote_sha.as_str()) && repo_path.is_dir() {
-        return Ok(remote_sha);
-    }
-
-    let staged_repo_dir = prepare_curated_repo_parent_and_temp_dir(&repo_path)?;
-    let zipball_bytes = runtime.block_on(fetch_curated_repo_zipball(api_base_url, &remote_sha))?;
-    extract_zipball_to_dir(&zipball_bytes, staged_repo_dir.path())?;
-    ensure_marketplace_manifest_exists(staged_repo_dir.path())?;
-    activate_curated_repo(&repo_path, staged_repo_dir)?;
-    write_curated_plugins_sha(&sha_path, &remote_sha)?;
-    Ok(remote_sha)
+    Ok(String::new())
 }
 
+/// kimcli-branding: the `chatgpt.com/backend-api/plugins/export/curated` fallback transport --
+/// the last resort when both git and the GitHub REST API fail. See
+/// CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard; still exercised directly by
+/// `#[ignore]`d tests in startup_sync_tests.rs.
+#[allow(dead_code)]
 fn sync_openai_plugins_repo_via_backup_archive(
-    codex_home: &Path,
-    backup_archive_api_url: &str,
+    _codex_home: &Path,
+    _backup_archive_api_url: &str,
 ) -> Result<String, String> {
-    let repo_path = curated_plugins_repo_path(codex_home);
-    let sha_path = curated_plugins_sha_path(codex_home);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("failed to create curated plugins sync runtime: {err}"))?;
-    let staged_repo_dir = prepare_curated_repo_parent_and_temp_dir(&repo_path)?;
-    let zipball_bytes = runtime.block_on(fetch_curated_repo_backup_archive_zip(
-        backup_archive_api_url,
-    ))?;
-    extract_zipball_to_dir(&zipball_bytes, staged_repo_dir.path())?;
-    ensure_marketplace_manifest_exists(staged_repo_dir.path())?;
-    let export_version = read_extracted_backup_archive_git_sha(staged_repo_dir.path())?
-        .unwrap_or_else(|| CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION.to_string());
-    activate_curated_repo(&repo_path, staged_repo_dir)?;
-    write_curated_plugins_sha(&sha_path, &export_version)?;
-    Ok(export_version)
+    Ok(String::new())
 }
 
 pub fn has_local_curated_plugins_snapshot(codex_home: &Path) -> bool {
@@ -372,33 +184,12 @@ pub fn has_local_curated_plugins_snapshot(codex_home: &Path) -> bool {
         && codex_home.join(CURATED_PLUGINS_SHA_FILE).is_file()
 }
 
-fn prepare_curated_repo_parent_and_temp_dir(repo_path: &Path) -> Result<TempDir, String> {
-    let Some(parent) = repo_path.parent() else {
-        return Err(format!(
-            "failed to determine curated plugins parent directory for {}",
-            repo_path.display()
-        ));
-    };
-    std::fs::create_dir_all(parent).map_err(|err| {
-        format!(
-            "failed to create curated plugins parent directory {}: {err}",
-            parent.display()
-        )
-    })?;
-    remove_stale_curated_repo_temp_dirs(parent, CURATED_PLUGINS_STALE_TEMP_DIR_MAX_AGE);
-
-    let clone_dir = tempfile::Builder::new()
-        .prefix("plugins-clone-")
-        .tempdir_in(parent)
-        .map_err(|err| {
-            format!(
-                "failed to create temporary curated plugins directory in {}: {err}",
-                parent.display()
-            )
-        })?;
-    Ok(clone_dir)
-}
-
+// kimcli-branding: `prepare_curated_repo_parent_and_temp_dir` (the only production caller) was
+// deleted as dead code once every curated-plugins sync entry point that used it was pinned (see
+// CURATED_PLUGINS_SYNC_NETWORK_DISABLED). This function itself does no networking -- it just
+// removes stale local temp directories -- so it is kept, with `#[allow(dead_code)]`, purely
+// because it still has its own meaningful unit test in startup_sync_tests.rs.
+#[allow(dead_code)]
 fn remove_stale_curated_repo_temp_dirs(parent: &Path, max_age: Duration) {
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
@@ -484,184 +275,31 @@ fn remove_stale_curated_repo_temp_dirs(parent: &Path, max_age: Duration) {
     }
 }
 
-fn emit_curated_plugins_startup_sync_metric(transport: &'static str, status: &'static str) {
-    emit_curated_plugins_startup_sync_counter(
-        CURATED_PLUGINS_STARTUP_SYNC_METRIC,
-        transport,
-        status,
-    );
+// kimcli-branding: `ensure_marketplace_manifest_exists`, `activate_curated_repo`,
+// `write_curated_plugins_sha`, `read_local_git_or_sha_file`, `git_head_sha`,
+// `run_git_command_with_timeout`, and `ensure_git_success` were removed entirely -- they were
+// pure plumbing for the git/HTTP/backup-archive sync transports above, had zero remaining
+// callers once those transports were pinned, and (unlike `remove_stale_curated_repo_temp_dirs`
+// or `read_extracted_backup_archive_git_sha` below) had no independent unit test coverage of
+// their own to preserve. The 3 `emit_curated_plugins_startup_sync_*` telemetry helpers were
+// removed for the same reason (their only callers were inside
+// `sync_openai_plugins_repo_with_transport_overrides`'s deleted body); permanently-disabled
+// startup sync has nothing to emit telemetry about.
+
+/// kimcli-branding: hardcodes `git ls-remote https://github.com/openai/plugins.git HEAD`. See
+/// CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even though it currently has
+/// no live caller (its only production caller, `sync_openai_plugins_repo_via_git`, is pinned
+/// above).
+#[allow(dead_code)]
+fn git_ls_remote_head_sha(_git_binary: &Path) -> Result<String, String> {
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-fn emit_curated_plugins_startup_sync_final_metric(transport: &'static str, status: &'static str) {
-    emit_curated_plugins_startup_sync_counter(
-        CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC,
-        transport,
-        status,
-    );
-}
-
-fn emit_curated_plugins_startup_sync_counter(
-    metric_name: &str,
-    transport: &'static str,
-    status: &'static str,
-) {
-    let Some(metrics) = codex_otel::global() else {
-        return;
-    };
-    let tags = [("transport", transport), ("status", status)];
-    let _ = metrics.counter(metric_name, /*inc*/ 1, &tags);
-}
-
-fn ensure_marketplace_manifest_exists(repo_path: &Path) -> Result<(), String> {
-    if repo_path.join(".agents/plugins/marketplace.json").is_file() {
-        return Ok(());
-    }
-    Err(format!(
-        "curated plugins archive missing marketplace manifest at {}",
-        repo_path.join(".agents/plugins/marketplace.json").display()
-    ))
-}
-
-fn activate_curated_repo(repo_path: &Path, staged_repo_dir: TempDir) -> Result<(), String> {
-    let staged_repo_path = staged_repo_dir.path();
-    if repo_path.exists() {
-        let parent = repo_path.parent().ok_or_else(|| {
-            format!(
-                "failed to determine curated plugins parent directory for {}",
-                repo_path.display()
-            )
-        })?;
-        let backup_dir = tempfile::Builder::new()
-            .prefix("plugins-backup-")
-            .tempdir_in(parent)
-            .map_err(|err| {
-                format!(
-                    "failed to create curated plugins backup directory in {}: {err}",
-                    parent.display()
-                )
-            })?;
-        let backup_repo_path = backup_dir.path().join("repo");
-
-        std::fs::rename(repo_path, &backup_repo_path).map_err(|err| {
-            format!(
-                "failed to move previous curated plugins repo out of the way at {}: {err}",
-                repo_path.display()
-            )
-        })?;
-
-        if let Err(err) = std::fs::rename(staged_repo_path, repo_path) {
-            let rollback_result = std::fs::rename(&backup_repo_path, repo_path);
-            return match rollback_result {
-                Ok(()) => Err(format!(
-                    "failed to activate new curated plugins repo at {}: {err}",
-                    repo_path.display()
-                )),
-                Err(rollback_err) => {
-                    let backup_path = backup_dir.keep().join("repo");
-                    Err(format!(
-                        "failed to activate new curated plugins repo at {}: {err}; failed to restore previous repo (left at {}): {rollback_err}",
-                        repo_path.display(),
-                        backup_path.display()
-                    ))
-                }
-            };
-        }
-    } else {
-        std::fs::rename(staged_repo_path, repo_path).map_err(|err| {
-            format!(
-                "failed to activate curated plugins repo at {}: {err}",
-                repo_path.display()
-            )
-        })?;
-    }
-
-    Ok(())
-}
-
-fn write_curated_plugins_sha(sha_path: &Path, remote_sha: &str) -> Result<(), String> {
-    if let Some(parent) = sha_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "failed to create curated plugins sha directory {}: {err}",
-                parent.display()
-            )
-        })?;
-    }
-    std::fs::write(sha_path, format!("{remote_sha}\n")).map_err(|err| {
-        format!(
-            "failed to write curated plugins sha file {}: {err}",
-            sha_path.display()
-        )
-    })
-}
-
-fn read_local_git_or_sha_file(
-    repo_path: &Path,
-    sha_path: &Path,
-    git_binary: &Path,
-) -> Option<String> {
-    if repo_path.join(".git").is_dir()
-        && let Ok(sha) = git_head_sha(repo_path, git_binary)
-    {
-        return Some(sha);
-    }
-
-    read_sha_file(sha_path)
-}
-
-fn git_ls_remote_head_sha(git_binary: &Path) -> Result<String, String> {
-    let mut command = git_command(git_binary);
-    command
-        .arg("ls-remote")
-        .arg("https://github.com/openai/plugins.git")
-        .arg("HEAD");
-    let output = run_git_command_with_timeout(
-        &mut command,
-        "git ls-remote curated plugins repo",
-        CURATED_PLUGINS_GIT_TIMEOUT,
-    )?;
-    ensure_git_success(&output, "git ls-remote curated plugins repo")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let Some(first_line) = stdout.lines().next() else {
-        return Err("git ls-remote returned empty output for curated plugins repo".to_string());
-    };
-    let Some((sha, _)) = first_line.split_once('\t') else {
-        return Err(format!(
-            "unexpected git ls-remote output for curated plugins repo: {first_line}"
-        ));
-    };
-    if sha.is_empty() {
-        return Err("git ls-remote returned empty sha for curated plugins repo".to_string());
-    }
-    Ok(sha.to_string())
-}
-
-fn git_head_sha(repo_path: &Path, git_binary: &Path) -> Result<String, String> {
-    let output = git_command(git_binary)
-        .arg("-C")
-        .arg(repo_path)
-        .arg("rev-parse")
-        .arg("HEAD")
-        .output()
-        .map_err(|err| {
-            format!(
-                "failed to run git rev-parse HEAD in {}: {err}",
-                repo_path.display()
-            )
-        })?;
-    ensure_git_success(&output, "git rev-parse HEAD")?;
-
-    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if sha.is_empty() {
-        return Err(format!(
-            "git rev-parse HEAD returned empty output in {}",
-            repo_path.display()
-        ));
-    }
-    Ok(sha)
-}
-
+// kimcli-branding: kept only for its own unit test in startup_sync_tests.rs
+// (`git_command_sanitizes_ambient_repository_environment`) -- its only production caller,
+// `git_ls_remote_head_sha`, is pinned above and no longer calls it. This function itself does no
+// networking; it just builds a `Command` with a sanitized environment.
+#[allow(dead_code)]
 fn git_command(git_binary: &Path) -> Command {
     let mut command = Command::new(git_binary);
     command.env("GIT_OPTIONAL_LOCKS", "0");
@@ -671,6 +309,10 @@ fn git_command(git_binary: &Path) -> Command {
     command
 }
 
+// kimcli-branding: kept only for its own unit test in startup_sync_tests.rs
+// (`apple_git_without_developer_tools_is_unavailable`) -- its only production caller was inside
+// `sync_openai_plugins_repo`'s deleted macOS branch, above.
+#[allow(dead_code)]
 #[cfg(any(target_os = "macos", test))]
 fn macos_git_binary_from_path(
     git_path: PathBuf,
@@ -683,155 +325,43 @@ fn macos_git_binary_from_path(
     }
 }
 
-#[cfg(target_os = "macos")]
-fn apple_developer_tools_available() -> bool {
-    Command::new("/usr/bin/xcode-select")
-        .arg("-p")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+// kimcli-branding: `run_git_command_with_timeout` and `ensure_git_success` were removed
+// entirely -- they were the shared subprocess-running/exit-status-checking plumbing behind
+// every pinned git function above, had zero remaining callers, and had no independent unit test
+// coverage of their own.
+
+/// kimcli-branding: builds `client` via `build_reqwest_client()` and would `GET
+/// {api_base_url}/repos/openai/plugins` and `.../git/ref/heads/<branch>` from
+/// `api.github.com`. See CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even
+/// though it currently has no live caller (its only production caller,
+/// `sync_openai_plugins_repo_via_http`, is pinned above).
+#[allow(dead_code)]
+async fn fetch_curated_repo_remote_sha(_api_base_url: &str) -> Result<String, String> {
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-fn run_git_command_with_timeout(
-    command: &mut Command,
-    context: &str,
-    timeout: Duration,
-) -> Result<Output, String> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("failed to run {context}: {err}"))?;
-
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|err| format!("failed to wait for {context}: {err}"));
-            }
-            Ok(None) => {}
-            Err(err) => return Err(format!("failed to poll {context}: {err}")),
-        }
-
-        if start.elapsed() >= timeout {
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    return child
-                        .wait_with_output()
-                        .map_err(|err| format!("failed to wait for {context}: {err}"));
-                }
-                Ok(None) => {}
-                Err(err) => return Err(format!("failed to poll {context}: {err}")),
-            }
-
-            let _ = child.kill();
-            let output = child
-                .wait_with_output()
-                .map_err(|err| format!("failed to wait for {context} after timeout: {err}"))?;
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return if stderr.is_empty() {
-                Err(format!("{context} timed out after {}s", timeout.as_secs()))
-            } else {
-                Err(format!(
-                    "{context} timed out after {}s: {stderr}",
-                    timeout.as_secs()
-                ))
-            };
-        }
-
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn ensure_git_success(output: &Output, context: &str) -> Result<(), String> {
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if stderr.is_empty() {
-        Err(format!("{context} failed with status {}", output.status))
-    } else {
-        Err(format!(
-            "{context} failed with status {}: {stderr}",
-            output.status
-        ))
-    }
-}
-
-async fn fetch_curated_repo_remote_sha(api_base_url: &str) -> Result<String, String> {
-    let api_base_url = api_base_url.trim_end_matches('/');
-    let repo_url = format!("{api_base_url}/repos/{OPENAI_PLUGINS_OWNER}/{OPENAI_PLUGINS_REPO}");
-    let client = build_reqwest_client();
-    let repo_body = fetch_github_text(&client, &repo_url, "get curated plugins repository").await?;
-    let repo_summary: GitHubRepositorySummary =
-        serde_json::from_str(&repo_body).map_err(|err| {
-            format!("failed to parse curated plugins repository response from {repo_url}: {err}")
-        })?;
-    if repo_summary.default_branch.is_empty() {
-        return Err(format!(
-            "curated plugins repository response from {repo_url} did not include a default branch"
-        ));
-    }
-
-    let git_ref_url = format!("{repo_url}/git/ref/heads/{}", repo_summary.default_branch);
-    let git_ref_body =
-        fetch_github_text(&client, &git_ref_url, "get curated plugins HEAD ref").await?;
-    let git_ref: GitHubGitRefSummary = serde_json::from_str(&git_ref_body).map_err(|err| {
-        format!("failed to parse curated plugins ref response from {git_ref_url}: {err}")
-    })?;
-    if git_ref.object.sha.is_empty() {
-        return Err(format!(
-            "curated plugins ref response from {git_ref_url} did not include a HEAD sha"
-        ));
-    }
-
-    Ok(git_ref.object.sha)
-}
-
+/// kimcli-branding: builds `client` via `build_reqwest_client()` and would `GET` a zipball from
+/// `api.github.com`. See CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even
+/// though it currently has no live caller (its only production caller,
+/// `sync_openai_plugins_repo_via_http`, is pinned above).
+#[allow(dead_code)]
 async fn fetch_curated_repo_zipball(
-    api_base_url: &str,
-    remote_sha: &str,
+    _api_base_url: &str,
+    _remote_sha: &str,
 ) -> Result<Vec<u8>, String> {
-    let api_base_url = api_base_url.trim_end_matches('/');
-    let repo_url = format!("{api_base_url}/repos/{OPENAI_PLUGINS_OWNER}/{OPENAI_PLUGINS_REPO}");
-    let zipball_url = format!("{repo_url}/zipball/{remote_sha}");
-    let client = build_reqwest_client();
-    fetch_github_bytes(&client, &zipball_url, "download curated plugins archive").await
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
+/// kimcli-branding: builds `client` via `build_reqwest_client()` and would `GET
+/// backup_archive_api_url` (`https://chatgpt.com/backend-api/plugins/export/curated`) and then
+/// the `download_url` it returns. See CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing
+/// guard even though it currently has no live caller (its only production caller,
+/// `sync_openai_plugins_repo_via_backup_archive`, is pinned above).
+#[allow(dead_code)]
 async fn fetch_curated_repo_backup_archive_zip(
-    backup_archive_api_url: &str,
+    _backup_archive_api_url: &str,
 ) -> Result<Vec<u8>, String> {
-    let client = build_reqwest_client();
-    let export_body = fetch_public_text(
-        &client,
-        backup_archive_api_url,
-        "get curated plugins export archive metadata",
-    )
-    .await?;
-    let export_response: CuratedPluginsBackupArchiveResponse = serde_json::from_str(&export_body)
-        .map_err(|err| {
-            format!(
-                "failed to parse curated plugins backup archive response from {backup_archive_api_url}: {err}"
-            )
-        })?;
-    if export_response.download_url.is_empty() {
-        return Err(format!(
-            "curated plugins backup archive response from {backup_archive_api_url} did not include a download URL"
-        ));
-    }
-
-    fetch_public_bytes(
-        &client,
-        &export_response.download_url,
-        "download curated plugins export archive",
-    )
-    .await
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
 fn read_extracted_backup_archive_git_sha(repo_path: &Path) -> Result<Option<String>, String> {
@@ -924,189 +454,57 @@ fn read_git_ref_sha(git_dir: &Path, reference: &str) -> Result<String, String> {
     ))
 }
 
-async fn fetch_github_text(client: &Client, url: &str, context: &str) -> Result<String, String> {
-    let response = github_request(client, url)
-        .send()
-        .await
-        .map_err(|err| format!("failed to {context} from {url}: {err}"))?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!(
-            "{context} from {url} failed with status {status}: {body}"
-        ));
-    }
-    Ok(body)
+/// kimcli-branding: the literal `.send()` leaf for GitHub API JSON responses. See
+/// CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even though it currently has
+/// no live caller (its callers, `fetch_curated_repo_remote_sha`, are pinned above).
+#[allow(dead_code)]
+async fn fetch_github_text(_client: &Client, _url: &str, _context: &str) -> Result<String, String> {
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-async fn fetch_github_bytes(client: &Client, url: &str, context: &str) -> Result<Vec<u8>, String> {
-    let response = github_request(client, url)
-        .send()
-        .await
-        .map_err(|err| format!("failed to {context} from {url}: {err}"))?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|err| format!("failed to read {context} response from {url}: {err}"))?;
-    if !status.is_success() {
-        let body_text = String::from_utf8_lossy(&body);
-        return Err(format!(
-            "{context} from {url} failed with status {status}: {body_text}"
-        ));
-    }
-    Ok(body.to_vec())
+/// kimcli-branding: the literal `.send()` leaf for GitHub API binary responses (zipballs). See
+/// CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even though it currently has
+/// no live caller (its caller, `fetch_curated_repo_zipball`, is pinned above).
+#[allow(dead_code)]
+async fn fetch_github_bytes(
+    _client: &Client,
+    _url: &str,
+    _context: &str,
+) -> Result<Vec<u8>, String> {
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-async fn fetch_public_text(client: &Client, url: &str, context: &str) -> Result<String, String> {
-    let response = client
-        .get(url)
-        .timeout(CURATED_PLUGINS_BACKUP_ARCHIVE_TIMEOUT)
-        .send()
-        .await
-        .map_err(|err| format!("failed to {context} from {url}: {err}"))?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!(
-            "{context} from {url} failed with status {status}: {body}"
-        ));
-    }
-    Ok(body)
+/// kimcli-branding: the literal `.send()` leaf for the chatgpt.com export-archive metadata
+/// response. See CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even though it
+/// currently has no live caller (its caller, `fetch_curated_repo_backup_archive_zip`, is pinned
+/// above).
+#[allow(dead_code)]
+async fn fetch_public_text(_client: &Client, _url: &str, _context: &str) -> Result<String, String> {
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-async fn fetch_public_bytes(client: &Client, url: &str, context: &str) -> Result<Vec<u8>, String> {
-    let response = client
-        .get(url)
-        .timeout(CURATED_PLUGINS_BACKUP_ARCHIVE_TIMEOUT)
-        .send()
-        .await
-        .map_err(|err| format!("failed to {context} from {url}: {err}"))?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|err| format!("failed to read {context} response from {url}: {err}"))?;
-    if !status.is_success() {
-        let body_text = String::from_utf8_lossy(&body);
-        return Err(format!(
-            "{context} from {url} failed with status {status}: {body_text}"
-        ));
-    }
-    Ok(body.to_vec())
+/// kimcli-branding: the literal `.send()` leaf for the chatgpt.com export-archive zip download.
+/// See CURATED_PLUGINS_SYNC_NETWORK_DISABLED. Kept as a standing guard even though it currently
+/// has no live caller (its caller, `fetch_curated_repo_backup_archive_zip`, is pinned above).
+#[allow(dead_code)]
+async fn fetch_public_bytes(
+    _client: &Client,
+    _url: &str,
+    _context: &str,
+) -> Result<Vec<u8>, String> {
+    Err(CURATED_PLUGINS_SYNC_NETWORK_DISABLED.to_string())
 }
 
-fn github_request(client: &Client, url: &str) -> reqwest::RequestBuilder {
-    client
-        .get(url)
-        .timeout(CURATED_PLUGINS_HTTP_TIMEOUT)
-        .header("accept", GITHUB_API_ACCEPT_HEADER)
-        .header("x-github-api-version", GITHUB_API_VERSION_HEADER)
-}
+// kimcli-branding: `github_request`, `extract_zipball_to_dir`, and `apply_zip_permissions` were
+// removed entirely -- they were request-building/archive-extraction plumbing with zero
+// remaining callers once the functions above were pinned, and had no independent unit test
+// coverage of their own.
 
 fn read_sha_file(sha_path: &Path) -> Option<String> {
     std::fs::read_to_string(sha_path)
         .ok()
         .map(|sha| sha.trim().to_string())
         .filter(|sha| !sha.is_empty())
-}
-
-fn extract_zipball_to_dir(bytes: &[u8], destination: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(destination).map_err(|err| {
-        format!(
-            "failed to create curated plugins extraction directory {}: {err}",
-            destination.display()
-        )
-    })?;
-
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = ZipArchive::new(cursor)
-        .map_err(|err| format!("failed to open curated plugins zip archive: {err}"))?;
-
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|err| format!("failed to read curated plugins zip entry: {err}"))?;
-        let Some(relative_path) = entry.enclosed_name() else {
-            return Err(format!(
-                "curated plugins zip entry `{}` escapes extraction root",
-                entry.name()
-            ));
-        };
-
-        let mut components = relative_path.components();
-        let Some(std::path::Component::Normal(_)) = components.next() else {
-            continue;
-        };
-
-        let output_relative = components.fold(PathBuf::new(), |mut path, component| {
-            if let std::path::Component::Normal(segment) = component {
-                path.push(segment);
-            }
-            path
-        });
-        if output_relative.as_os_str().is_empty() {
-            continue;
-        }
-
-        let output_path = destination.join(&output_relative);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&output_path).map_err(|err| {
-                format!(
-                    "failed to create curated plugins directory {}: {err}",
-                    output_path.display()
-                )
-            })?;
-            continue;
-        }
-
-        if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "failed to create curated plugins directory {}: {err}",
-                    parent.display()
-                )
-            })?;
-        }
-        let mut output = std::fs::File::create(&output_path).map_err(|err| {
-            format!(
-                "failed to create curated plugins file {}: {err}",
-                output_path.display()
-            )
-        })?;
-        std::io::copy(&mut entry, &mut output).map_err(|err| {
-            format!(
-                "failed to write curated plugins file {}: {err}",
-                output_path.display()
-            )
-        })?;
-        apply_zip_permissions(&entry, &output_path)?;
-    }
-
-    Ok(())
-}
-
-#[cfg(unix)]
-fn apply_zip_permissions(entry: &zip::read::ZipFile<'_>, output_path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let Some(mode) = entry.unix_mode() else {
-        return Ok(());
-    };
-    std::fs::set_permissions(output_path, std::fs::Permissions::from_mode(mode)).map_err(|err| {
-        format!(
-            "failed to set permissions on curated plugins file {}: {err}",
-            output_path.display()
-        )
-    })
-}
-
-#[cfg(not(unix))]
-fn apply_zip_permissions(
-    _entry: &zip::read::ZipFile<'_>,
-    _output_path: &Path,
-) -> Result<(), String> {
-    Ok(())
 }
 
 #[cfg(test)]
