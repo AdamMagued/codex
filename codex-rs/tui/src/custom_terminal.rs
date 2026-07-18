@@ -178,6 +178,31 @@ where
     visible_history_rows: u16,
     #[cfg(test)]
     screen_size_override: Option<Size>,
+    /// Discriminant tag (see `cursor_style_tag`) of the cursor style most recently written to
+    /// the backend, or `None` if no style has been written yet this session. `try_draw` uses
+    /// this to skip re-emitting the cursor-style escape sequence (e.g. `ESC[0 q`) every single
+    /// frame when the requested style hasn't actually changed since the last draw -- previously
+    /// every frame with a visible cursor unconditionally rewrote it, which is harmless per-frame
+    /// but adds up to hundreds of redundant escape sequences per second while animations (like
+    /// the working-status spinner) keep the frame loop busy. `SetCursorStyle` itself doesn't
+    /// implement `PartialEq`, hence the small `u8` tag rather than storing the style directly.
+    last_written_cursor_style_tag: Option<u8>,
+}
+
+/// A `Copy + PartialEq`-friendly discriminant for `crossterm::cursor::SetCursorStyle`, which
+/// does not itself implement `PartialEq` (only `Clone, Copy`). Used to detect when the cursor
+/// style requested for a frame actually differs from the one last written to the backend, so
+/// `Terminal::try_draw` can skip re-emitting an unchanged style every frame.
+fn cursor_style_tag(style: SetCursorStyle) -> u8 {
+    match style {
+        SetCursorStyle::DefaultUserShape => 0,
+        SetCursorStyle::BlinkingBlock => 1,
+        SetCursorStyle::SteadyBlock => 2,
+        SetCursorStyle::BlinkingUnderScore => 3,
+        SetCursorStyle::SteadyUnderScore => 4,
+        SetCursorStyle::BlinkingBar => 5,
+        SetCursorStyle::SteadyBar => 6,
+    }
 }
 
 impl<B> Drop for Terminal<B>
@@ -257,6 +282,7 @@ where
             visible_history_rows: 0,
             #[cfg(test)]
             screen_size_override: None,
+            last_written_cursor_style_tag: None,
         }
     }
 
@@ -442,7 +468,17 @@ where
         match cursor_position {
             None => self.hide_cursor()?,
             Some(position) => {
-                self.set_cursor_style(cursor_style)?;
+                // Only emit the cursor-style escape sequence (e.g. `ESC[0 q`) when the style
+                // actually changed since the last draw. Every frame with a visible cursor used
+                // to rewrite it unconditionally, which is a no-op on the terminal but still
+                // costs a real write+parse -- during an animated turn (spinner/elapsed-seconds
+                // redraws firing many times per second) that adds up to hundreds of redundant
+                // sequences for a style that never moved off `DefaultUserShape`.
+                let style_tag = cursor_style_tag(cursor_style);
+                if self.last_written_cursor_style_tag != Some(style_tag) {
+                    self.set_cursor_style(cursor_style)?;
+                    self.last_written_cursor_style_tag = Some(style_tag);
+                }
                 self.show_cursor()?;
                 self.set_cursor_position(position)?;
             }
@@ -1011,6 +1047,54 @@ mod tests {
         assert!(
             actual.contains(&expected),
             "expected terminal output to contain cursor style {expected:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_draw_only_reemits_cursor_style_when_it_changes() {
+        let mut output = Vec::new();
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 2, /*height*/ 1))
+                .expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 2, 1));
+
+        let draw_with_style = |terminal: &mut Terminal<CaptureBackend>, style: SetCursorStyle| {
+            terminal
+                .try_draw(|frame| {
+                    frame.set_cursor_style(style);
+                    frame.set_cursor_position((0, 0));
+                    io::Result::Ok(())
+                })
+                .expect("draw");
+        };
+
+        // Three consecutive frames requesting the SAME cursor style (the common case while an
+        // animation like the working-status spinner keeps redrawing but the composer isn't
+        // focused, so the style never actually changes) should only write the style escape
+        // sequence once, not once per frame.
+        draw_with_style(&mut terminal, SetCursorStyle::SteadyBar);
+        draw_with_style(&mut terminal, SetCursorStyle::SteadyBar);
+        draw_with_style(&mut terminal, SetCursorStyle::SteadyBar);
+
+        queue!(output, SetCursorStyle::SteadyBar).expect("queue style");
+        let steady_bar_sequence = String::from_utf8(output).expect("utf8");
+        let actual = terminal.backend().output();
+        assert_eq!(
+            actual.matches(steady_bar_sequence.as_str()).count(),
+            1,
+            "expected exactly one cursor-style write across three unchanged-style frames, got output: {actual:?}"
+        );
+
+        // Changing the style on a later frame must still emit a new write.
+        draw_with_style(&mut terminal, SetCursorStyle::DefaultUserShape);
+        let mut default_output = Vec::new();
+        queue!(default_output, SetCursorStyle::DefaultUserShape).expect("queue style");
+        let default_sequence = String::from_utf8(default_output).expect("utf8");
+        let actual = terminal.backend().output();
+        assert_eq!(
+            actual.matches(default_sequence.as_str()).count(),
+            1,
+            "expected the changed style to be written exactly once, got output: {actual:?}"
         );
     }
 

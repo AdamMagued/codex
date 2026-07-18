@@ -34,6 +34,10 @@ use crate::wrapping::word_wrap_lines;
 
 pub(crate) const STATUS_DETAILS_DEFAULT_MAX_LINES: usize = 3;
 const DETAILS_PREFIX: &str = "  └ ";
+/// Animation-frame polling interval for the working/status row (~10fps). See the doc comment on
+/// the `schedule_frame_in` call in `Renderable::render` below for why this was lowered from the
+/// previous 32ms (~31fps).
+const STATUS_INDICATOR_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatusDetailsCapitalization {
@@ -241,9 +245,16 @@ impl Renderable for StatusIndicatorWidget {
         }
 
         if self.animations_enabled {
-            // Schedule next animation frame.
+            // Schedule the next animation tick. This widget only shows two things that actually
+            // change over time: the shimmer sweep (a slow 2-second-period gradient, see
+            // shimmer.rs) and the elapsed-seconds counter (changes once per second). Redrawing
+            // at ~31fps (the previous 32ms interval) repainted this row hundreds of times per
+            // second for content that visually changes only a few times per second at most --
+            // real terminal emulators still have to parse and repaint every one of those frames,
+            // which is perceptible as lag during a long-running turn. ~10fps is still smooth
+            // enough for a slow gradient sweep and is what a real terminal spinner needs.
             self.frame_requester
-                .schedule_frame_in(Duration::from_millis(32));
+                .schedule_frame_in(STATUS_INDICATOR_TICK_INTERVAL);
         }
         let now = Instant::now();
         let elapsed_duration = self.elapsed_duration_at(now);
