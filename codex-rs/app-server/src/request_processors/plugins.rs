@@ -2317,6 +2317,7 @@ fn remote_plugin_catalog_error_type(err: &RemotePluginCatalogError) -> &'static 
         RemotePluginCatalogError::MissingUploadEtag => "remote_catalog_missing_upload_etag",
         RemotePluginCatalogError::UnexpectedResponse(_) => "remote_catalog_unexpected_response",
         RemotePluginCatalogError::CacheRemove(_) => "remote_catalog_cache_remove",
+        RemotePluginCatalogError::NetworkDisabled => "remote_catalog_network_disabled",
     }
 }
 
@@ -2353,6 +2354,7 @@ fn remote_plugin_bundle_install_error_type(err: &RemotePluginBundleInstallError)
         RemotePluginBundleInstallError::Io { .. } => "remote_bundle_io",
         RemotePluginBundleInstallError::InvalidBundle(_) => "remote_bundle_invalid_bundle",
         RemotePluginBundleInstallError::Store(_) => "remote_bundle_store",
+        RemotePluginBundleInstallError::NetworkDisabled => "remote_bundle_network_disabled",
     }
 }
 
@@ -2385,7 +2387,8 @@ fn remote_plugin_catalog_error_to_jsonrpc(
         | RemotePluginCatalogError::ArchiveJoin(_)
         | RemotePluginCatalogError::MissingUploadEtag
         | RemotePluginCatalogError::UnexpectedResponse(_)
-        | RemotePluginCatalogError::CacheRemove(_) => internal_error(message),
+        | RemotePluginCatalogError::CacheRemove(_)
+        | RemotePluginCatalogError::NetworkDisabled => internal_error(message),
     }
 }
 
