@@ -397,6 +397,11 @@ fn remove_stale_curated_repo_temp_dirs_removes_only_matching_directories() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_with_transport_overrides is pinned to \
+    Ok(String::new()) without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real concurrent git \
+    ls-remote/fetch behavior, which is never reached anymore. Kept (ignored, not deleted) as a \
+    record of that concurrency contract."]
 fn concurrent_syncs_serialize_fetches_without_skipping_remote_checks() {
     let tmp = tempdir().expect("tempdir");
     let bin_dir = tempfile::Builder::new()
@@ -495,6 +500,11 @@ exit 1
 
 #[cfg(unix)]
 #[test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_via_git is pinned to Ok(String::new()) \
+    without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real git ls-remote/fetch \
+    wire behavior against a locally rewritten remote, which is never reached anymore. Kept \
+    (ignored, not deleted) as a record of that contract."]
 fn sync_openai_plugins_repo_via_git_succeeds_with_local_rewritten_remote() {
     let tmp = tempdir().expect("tempdir");
     let repo_root = tempfile::Builder::new()
@@ -703,6 +713,11 @@ fn sync_openai_plugins_repo_via_git_succeeds_with_local_rewritten_remote() {
 }
 
 #[tokio::test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_with_transport_overrides is pinned to \
+    Ok(String::new()) without touching the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real GitHub HTTP fallback \
+    behavior against a wiremock MockServer, which is never hit anymore. Kept (ignored, not \
+    deleted) as a record of that wire contract."]
 async fn sync_openai_plugins_repo_falls_back_to_http_when_git_is_unavailable() {
     let tmp = tempdir().expect("tempdir");
     let server = MockServer::start().await;
@@ -752,6 +767,11 @@ fn apple_git_without_developer_tools_is_unavailable() {
 }
 
 #[tokio::test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_with_transport_overrides is pinned to \
+    Ok(String::new()) without touching the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real GitHub HTTP transport \
+    behavior against a wiremock MockServer, which is never hit anymore. Kept (ignored, not \
+    deleted) as a record of that wire contract."]
 async fn sync_openai_plugins_repo_uses_http_without_git_transport() {
     let tmp = tempdir().expect("tempdir");
     let server = MockServer::start().await;
@@ -774,6 +794,11 @@ async fn sync_openai_plugins_repo_uses_http_without_git_transport() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_with_transport_overrides is pinned to \
+    Ok(String::new()) without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real git-failure-then-HTTP-\
+    fallback behavior against a wiremock MockServer, which is never hit anymore. Kept (ignored, \
+    not deleted) as a record of that wire contract."]
 async fn sync_openai_plugins_repo_falls_back_to_http_when_git_sync_fails() {
     let tmp = tempdir().expect("tempdir");
     let bin_dir = tempfile::Builder::new()
@@ -812,6 +837,11 @@ exit 1
 
 #[cfg(unix)]
 #[test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_via_git is pinned to Ok(String::new()) \
+    without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real fetch-failure cleanup \
+    behavior, which is never reached anymore. Kept (ignored, not deleted) as a record of that \
+    contract."]
 fn sync_openai_plugins_repo_via_git_cleans_up_staged_dir_on_fetch_failure() {
     let tmp = tempdir().expect("tempdir");
     let bin_dir = tempfile::Builder::new()
@@ -852,6 +882,11 @@ exit 1
 
 #[cfg(unix)]
 #[test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_via_git is pinned to Ok(String::new()) \
+    without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real snapshot-preserving \
+    validation-failure behavior, which is never reached anymore. Kept (ignored, not deleted) as \
+    a record of that contract."]
 fn sync_openai_plugins_repo_via_git_preserves_existing_snapshot_on_validation_failure() {
     let tmp = tempdir().expect("tempdir");
     let repo_path = curated_plugins_repo_path(tmp.path());
@@ -922,6 +957,11 @@ exit 1
 }
 
 #[tokio::test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_via_http is pinned to Ok(String::new()) \
+    without touching the network (see startup_sync.rs's CURATED_PLUGINS_SYNC_NETWORK_DISABLED); \
+    this test asserted the real extract-failure cleanup behavior against a wiremock \
+    MockServer, which is never hit anymore. Kept (ignored, not deleted) as a record of that \
+    wire contract."]
 async fn sync_openai_plugins_repo_via_http_cleans_up_staged_dir_on_extract_failure() {
     let tmp = tempdir().expect("tempdir");
     let server = MockServer::start().await;
@@ -939,6 +979,11 @@ async fn sync_openai_plugins_repo_via_http_cleans_up_staged_dir_on_extract_failu
 }
 
 #[tokio::test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_with_transport_overrides is pinned to \
+    Ok(String::new()) without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real sha-matches-skip-\
+    download behavior against a wiremock MockServer, which is never hit anymore. Kept \
+    (ignored, not deleted) as a record of that wire contract."]
 async fn sync_openai_plugins_repo_skips_archive_download_when_sha_matches() {
     let tmp = tempdir().expect("tempdir");
     let repo_path = curated_plugins_repo_path(tmp.path());
@@ -969,6 +1014,11 @@ async fn sync_openai_plugins_repo_skips_archive_download_when_sha_matches() {
 }
 
 #[tokio::test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_with_transport_overrides is pinned to \
+    Ok(String::new()) without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real chatgpt.com \
+    export-archive fallback behavior against a wiremock MockServer, which is never hit \
+    anymore. Kept (ignored, not deleted) as a record of that wire contract."]
 async fn sync_openai_plugins_repo_falls_back_to_export_archive_when_no_snapshot_exists() {
     let tmp = tempdir().expect("tempdir");
     let server = MockServer::start().await;
@@ -1001,6 +1051,11 @@ async fn sync_openai_plugins_repo_falls_back_to_export_archive_when_no_snapshot_
 }
 
 #[tokio::test]
+#[ignore = "kimcli-branding: sync_openai_plugins_repo_with_transport_overrides is pinned to \
+    Ok(String::new()) without touching git or the network (see startup_sync.rs's \
+    CURATED_PLUGINS_SYNC_NETWORK_DISABLED); this test asserted the real \
+    skip-export-archive-when-snapshot-exists behavior against a wiremock MockServer, which is \
+    never hit anymore. Kept (ignored, not deleted) as a record of that wire contract."]
 async fn sync_openai_plugins_repo_skips_export_archive_when_snapshot_exists() {
     let tmp = tempdir().expect("tempdir");
     let curated_root = curated_plugins_repo_path(tmp.path());
