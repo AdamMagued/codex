@@ -785,6 +785,7 @@ source = "/tmp/{sales_marketplace_name}"
     assert_eq!(discoverable_plugins, Vec::new());
 }
 
+#[ignore = "kimcli-branding: fetch_directory_plugins_for_scope (via get_remote_plugin_list_page) is pinned to never build a request (see core-plugins/src/remote.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn expands_cached_remote_plugins_by_loaded_apps() {
     let codex_home = tempdir().expect("tempdir should succeed");

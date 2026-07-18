@@ -164,6 +164,7 @@ fn expected_plugin_interface() -> PluginInterface {
     }
 }
 
+#[ignore = "kimcli-branding: this function is pinned to never build a request (see core-plugins/src/remote/share.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass. Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn save_remote_plugin_share_creates_workspace_plugin() {
     let codex_home = TempDir::new().unwrap();
@@ -356,6 +357,7 @@ fn archive_plugin_for_upload_round_trips_through_plugin_bundle_archive_with_long
     );
 }
 
+#[ignore = "kimcli-branding: this function is pinned to never build a request (see core-plugins/src/remote/share.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass. Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn save_remote_plugin_share_updates_existing_workspace_plugin() {
     let codex_home = TempDir::new().unwrap();
@@ -424,6 +426,7 @@ async fn save_remote_plugin_share_updates_existing_workspace_plugin() {
     );
 }
 
+#[ignore = "kimcli-branding: this function is pinned to never build a request (see core-plugins/src/remote/share.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass. Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn update_remote_plugin_share_targets_updates_targets() {
     let server = MockServer::start().await;
@@ -518,6 +521,7 @@ async fn update_remote_plugin_share_targets_updates_targets() {
     );
 }
 
+#[ignore = "kimcli-branding: this function is pinned to never build a request (see core-plugins/src/remote/share.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass. Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn list_remote_plugin_shares_fetches_created_workspace_plugins() {
     let codex_home = TempDir::new().unwrap();
@@ -700,6 +704,7 @@ async fn list_remote_plugin_shares_fetches_created_workspace_plugins() {
     );
 }
 
+#[ignore = "kimcli-branding: this function is pinned to never build a request (see core-plugins/src/remote/share.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass. Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn delete_remote_plugin_share_deletes_workspace_plugin() {
     let codex_home = TempDir::new().unwrap();

@@ -4805,6 +4805,7 @@ enabled = true
     );
 }
 
+#[ignore = "kimcli-branding: the remote plugin fetch functions this test mocks (fetch_remote_featured_plugin_ids / fetch_recommended_plugins) are pinned to never build a request (see core-plugins/src/remote.rs and remote_legacy.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn featured_plugin_ids_for_config_uses_restriction_product_query_param() {
     let tmp = tempfile::tempdir().unwrap();
@@ -4844,6 +4845,7 @@ plugins = true
     assert_eq!(featured_plugin_ids, vec!["chat-plugin".to_string()]);
 }
 
+#[ignore = "kimcli-branding: the remote plugin fetch functions this test mocks (fetch_remote_featured_plugin_ids / fetch_recommended_plugins) are pinned to never build a request (see core-plugins/src/remote.rs and remote_legacy.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn featured_plugin_ids_for_config_defaults_query_param_to_codex() {
     let tmp = tempfile::tempdir().unwrap();
@@ -4878,6 +4880,7 @@ plugins = true
     assert_eq!(featured_plugin_ids, vec!["codex-plugin".to_string()]);
 }
 
+#[ignore = "kimcli-branding: the remote plugin fetch functions this test mocks (fetch_remote_featured_plugin_ids / fetch_recommended_plugins) are pinned to never build a request (see core-plugins/src/remote.rs and remote_legacy.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn remote_plugin_caches_refresh_warms_recommended_plugins_cache() {
     let tmp = tempfile::tempdir().unwrap();
@@ -4938,6 +4941,7 @@ plugins = true
     assert_eq!(manager.cached_recommended_plugins_mode(&cache_key), None);
 }
 
+#[ignore = "kimcli-branding: the remote plugin fetch functions this test mocks (fetch_remote_featured_plugin_ids / fetch_recommended_plugins) are pinned to never build a request (see core-plugins/src/remote.rs and remote_legacy.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn recommended_plugins_mode_deduplicates_concurrent_cache_misses() {
     let tmp = tempfile::tempdir().unwrap();
@@ -5015,6 +5019,7 @@ plugins = true
     );
 }
 
+#[ignore = "kimcli-branding: the remote plugin fetch functions this test mocks (fetch_remote_featured_plugin_ids / fetch_recommended_plugins) are pinned to never build a request (see core-plugins/src/remote.rs and remote_legacy.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn recommended_plugin_candidates_filter_installed_and_disabled_plugins() {
     let tmp = tempfile::tempdir().unwrap();
@@ -5087,6 +5092,7 @@ plugins = true
     );
 }
 
+#[ignore = "kimcli-branding: the remote plugin fetch functions this test mocks (fetch_remote_featured_plugin_ids / fetch_recommended_plugins) are pinned to never build a request (see core-plugins/src/remote.rs and remote_legacy.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn recommended_plugins_mode_caches_explicit_false() {
     let tmp = tempfile::tempdir().unwrap();
@@ -5126,6 +5132,7 @@ plugins = true
     );
 }
 
+#[ignore = "kimcli-branding: the remote plugin fetch functions this test mocks (fetch_remote_featured_plugin_ids / fetch_recommended_plugins) are pinned to never build a request (see core-plugins/src/remote.rs and remote_legacy.rs); this mock-server test proved the real HTTP request/response shape and can no longer pass (the mocked endpoint is never hit). Kept (ignored, not deleted) as a record of the wire contract in case the function is ever reconnected -- see the commit that added this #[ignore]."]
 #[tokio::test]
 async fn recommended_plugins_mode_retries_after_fetch_failure() {
     let tmp = tempfile::tempdir().unwrap();

@@ -478,6 +478,7 @@ mod tests {
         clear_remote_installed_plugin_bundle_sync_in_flight(&key);
     }
 
+    #[ignore = "kimcli-branding: fetch_installed_plugins_for_scope_with_download_url / get_remote_plugin_installed_page (see core-plugins/src/remote.rs) are pinned to never build a request; this mock-server test proved the real HTTP request/response shape and the resulting local-metadata-backfill behavior, and can no longer pass (the mocked endpoints are never hit). Kept (ignored, not deleted) as a record of the wire contract and backfill behavior in case this is ever reconnected -- see the commit that added this #[ignore]."]
     #[tokio::test]
     async fn sync_backfills_remote_plugin_install_metadata_for_current_bundle() {
         let server = MockServer::start().await;

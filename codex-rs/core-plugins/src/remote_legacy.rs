@@ -1,13 +1,7 @@
 use crate::remote::RemotePluginServiceConfig;
 use codex_login::CodexAuth;
-use codex_login::default_client::build_reqwest_client;
 use codex_protocol::protocol::Product;
 use serde::Deserialize;
-use std::time::Duration;
-use url::Url;
-
-const REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-const REMOTE_PLUGIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +63,13 @@ pub enum RemotePluginMutationError {
         expected_enabled: bool,
         actual_enabled: bool,
     },
+
+    /// kimcli-branding: returned by `post_remote_plugin_mutation` in place of ever
+    /// building a request to `chatgpt_base_url` (see its doc comment below). A mutation
+    /// (`enable`/`uninstall`) with a real remote side effect, so this is an honest
+    /// failure rather than a fabricated success.
+    #[error("kimcli does not issue plugin requests to OpenAI-hosted infrastructure (chatgpt_base_url)")]
+    NetworkDisabled,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -95,44 +96,27 @@ pub enum RemotePluginFetchError {
     },
 }
 
+/// kimcli-branding override: never issues the request.
+///
+/// Upstream this built and sent `GET {chatgpt_base_url}/plugins/featured`
+/// unconditionally -- the auth check below only gated whether auth headers were
+/// *attached*, not whether the request fired at all, so this reached chatgpt.com even
+/// with no ChatGPT auth present, gated only by `config.plugins_enabled` (default true)
+/// via `featured_plugin_ids_for_config`, itself reachable from real app-server startup
+/// (`app-server/src/message_processor.rs` -> `maybe_start_plugin_startup_tasks_for_config`).
+/// This is the network-level backstop behind the policy gates
+/// (`host_owned_codex_apps_enabled` / `Features::apps_enabled_for_auth` /
+/// `PluginsManager::remote_global_catalog_active`, all hard-pinned false elsewhere) so
+/// that this auth-independent gate-bypass path cannot reach the network either, no
+/// matter what a future caller checks first. An empty Vec is `featured_plugin_ids_for_config`'s
+/// existing "nothing to feature" outcome, so this is indistinguishable from a live
+/// empty response to every caller.
 pub async fn fetch_remote_featured_plugin_ids(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    product: Option<Product>,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _product: Option<Product>,
 ) -> Result<Vec<String>, RemotePluginFetchError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/plugins/featured");
-    let client = build_reqwest_client();
-    let mut request = client
-        .get(&url)
-        .query(&[(
-            "platform",
-            product.unwrap_or(Product::Codex).to_app_platform(),
-        )])
-        .timeout(REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT);
-
-    if let Some(auth) = auth.filter(|auth| auth.uses_codex_backend()) {
-        request =
-            request.headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers());
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginFetchError::Request {
-            url: url.clone(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(RemotePluginFetchError::UnexpectedStatus { url, status, body });
-    }
-
-    serde_json::from_str(&body).map_err(|source| RemotePluginFetchError::Decode {
-        url: url.clone(),
-        source,
-    })
+    Ok(Vec::new())
 }
 
 pub async fn enable_remote_plugin(
@@ -153,83 +137,22 @@ pub async fn uninstall_remote_plugin(
     Ok(())
 }
 
-fn ensure_codex_backend_auth(
-    auth: Option<&CodexAuth>,
-) -> Result<&CodexAuth, RemotePluginMutationError> {
-    let Some(auth) = auth else {
-        return Err(RemotePluginMutationError::AuthRequired);
-    };
-    if !auth.uses_codex_backend() {
-        return Err(RemotePluginMutationError::UnsupportedAuthMode);
-    }
-    Ok(auth)
-}
+// kimcli-branding: `ensure_codex_backend_auth`/`remote_plugin_mutation_url` were removed
+// entirely -- once `post_remote_plugin_mutation` is pinned to never build a request
+// (below), they had zero remaining callers.
 
+/// kimcli-branding override: never issues the request. Shared by `enable_remote_plugin`
+/// and `uninstall_remote_plugin` above, both of which propagate this error via `?` --
+/// pinning this one function is sufficient to make both public entry points inert. This
+/// is the network-level backstop behind the policy gates
+/// (`host_owned_codex_apps_enabled` / `Features::apps_enabled_for_auth` /
+/// `PluginsManager::remote_global_catalog_active`), same rationale as
+/// `fetch_remote_featured_plugin_ids` above.
 async fn post_remote_plugin_mutation(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    plugin_id: &str,
-    action: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _plugin_id: &str,
+    _action: &str,
 ) -> Result<RemotePluginMutationResponse, RemotePluginMutationError> {
-    let auth = ensure_codex_backend_auth(auth)?;
-    let url = remote_plugin_mutation_url(config, plugin_id, action)?;
-    let client = build_reqwest_client();
-    let request = client
-        .post(url.clone())
-        .timeout(REMOTE_PLUGIN_MUTATION_TIMEOUT)
-        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers());
-
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginMutationError::Request {
-            url: url.clone(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(RemotePluginMutationError::UnexpectedStatus { url, status, body });
-    }
-
-    let parsed: RemotePluginMutationResponse =
-        serde_json::from_str(&body).map_err(|source| RemotePluginMutationError::Decode {
-            url: url.clone(),
-            source,
-        })?;
-    let expected_enabled = action == "enable";
-    if parsed.id != plugin_id {
-        return Err(RemotePluginMutationError::UnexpectedPluginId {
-            expected: plugin_id.to_string(),
-            actual: parsed.id,
-        });
-    }
-    if parsed.enabled != expected_enabled {
-        return Err(RemotePluginMutationError::UnexpectedEnabledState {
-            plugin_id: plugin_id.to_string(),
-            expected_enabled,
-            actual_enabled: parsed.enabled,
-        });
-    }
-
-    Ok(parsed)
-}
-
-fn remote_plugin_mutation_url(
-    config: &RemotePluginServiceConfig,
-    plugin_id: &str,
-    action: &str,
-) -> Result<String, RemotePluginMutationError> {
-    let mut url = Url::parse(config.chatgpt_base_url.trim_end_matches('/'))
-        .map_err(RemotePluginMutationError::InvalidBaseUrl)?;
-    {
-        let mut segments = url
-            .path_segments_mut()
-            .map_err(|()| RemotePluginMutationError::InvalidBaseUrlPath)?;
-        segments.pop_if_empty();
-        segments.push("plugins");
-        segments.push(plugin_id);
-        segments.push(action);
-    }
-    Ok(url.to_string())
+    Err(RemotePluginMutationError::NetworkDisabled)
 }
