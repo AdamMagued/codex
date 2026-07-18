@@ -1,18 +1,14 @@
 use super::*;
 use crate::plugin_bundle_archive::PluginBundlePackError;
 use crate::plugin_bundle_archive::pack_plugin_bundle_tar_gz;
-use codex_http_client::RouteAwareRequestBuilder;
 use codex_login::CodexAuth;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use http::Method;
-use http::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 use tracing::warn;
-use url::Url;
 
 mod checkout;
 mod local_paths;
@@ -93,14 +89,9 @@ pub struct RemotePluginShareUpdateTargetsResult {
     pub discoverability: RemotePluginShareDiscoverability,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct RemoteWorkspacePluginUploadUrlRequest<'a> {
-    filename: &'a str,
-    mime_type: &'a str,
-    size_bytes: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plugin_id: Option<&'a str>,
-}
+// kimcli-branding: `RemoteWorkspacePluginUploadUrlRequest` was removed entirely -- it was
+// only constructed as the request body inside `create_workspace_plugin_upload`, which no
+// longer builds a request.
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RemoteWorkspacePluginUploadUrlResponse {
@@ -125,17 +116,9 @@ struct RemoteWorkspacePluginCreateResponse {
     share_url: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct RemotePluginShareUpdateTargetsRequest {
-    discoverability: RemotePluginShareUpdateDiscoverability,
-    targets: Vec<RemotePluginShareTarget>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct RemotePluginShareUpdateTargetsResponse {
-    principals: Vec<RemotePluginSharePrincipal>,
-    discoverability: RemotePluginShareDiscoverability,
-}
+// kimcli-branding: `RemotePluginShareUpdateTargetsRequest`/`RemotePluginShareUpdateTargetsResponse`
+// were removed entirely -- both were only used inside `update_remote_plugin_share_targets`'s
+// body, which no longer builds a request.
 
 pub async fn save_remote_plugin_share(
     config: &RemotePluginServiceConfig,
@@ -272,59 +255,30 @@ pub fn load_plugin_share_remote_ids_by_local_path(
         .collect()
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment in `remote.rs` for the full rationale). A mutation with a real remote side
+/// effect the local path-mapping removal depends on having actually happened, so
+/// `NetworkDisabled` is returned rather than faking success and removing local state for
+/// a delete that never reached the server.
 pub async fn delete_remote_plugin_share(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    codex_home: &Path,
-    remote_plugin_id: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _codex_home: &Path,
+    _remote_plugin_id: &str,
 ) -> Result<(), RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/public/plugins/workspace/{remote_plugin_id}");
-    let request = authenticated_request(config.http_request(Method::DELETE, &url), auth);
-    send_and_expect_status(request, &url, &[StatusCode::NO_CONTENT]).await?;
-    if let Err(err) = local_paths::remove_plugin_share_local_path(codex_home, remote_plugin_id) {
-        warn!(
-            remote_plugin_id = %remote_plugin_id,
-            "failed to remove plugin share local path mapping: {err}"
-        );
-    }
-    Ok(())
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment in `remote.rs` for the full rationale).
 pub async fn update_remote_plugin_share_targets(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    remote_plugin_id: &str,
-    targets: Vec<RemotePluginShareTarget>,
-    discoverability: RemotePluginShareUpdateDiscoverability,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _remote_plugin_id: &str,
+    _targets: Vec<RemotePluginShareTarget>,
+    _discoverability: RemotePluginShareUpdateDiscoverability,
 ) -> Result<RemotePluginShareUpdateTargetsResult, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let target_discoverability = match discoverability {
-        RemotePluginShareUpdateDiscoverability::Listed => RemotePluginShareDiscoverability::Listed,
-        RemotePluginShareUpdateDiscoverability::Unlisted => {
-            RemotePluginShareDiscoverability::Unlisted
-        }
-        RemotePluginShareUpdateDiscoverability::Private => {
-            RemotePluginShareDiscoverability::Private
-        }
-    };
-    let targets =
-        ensure_unlisted_workspace_target(auth, Some(target_discoverability), Some(targets))?
-            .unwrap_or_default();
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/ps/plugins/{remote_plugin_id}/shares");
-    let request = authenticated_request(config.http_request(Method::PUT, &url), auth).json(
-        &RemotePluginShareUpdateTargetsRequest {
-            discoverability,
-            targets,
-        },
-    );
-    let response: RemotePluginShareUpdateTargetsResponse = send_and_decode(request, &url).await?;
-    Ok(RemotePluginShareUpdateTargetsResult {
-        principals: response.principals,
-        discoverability: response.discoverability,
-    })
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
 fn ensure_unlisted_workspace_target(
@@ -372,88 +326,65 @@ async fn fetch_created_workspace_plugins(
     Ok(plugins)
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment in `remote.rs` for the full rationale). Empty page, no next-page-token --
+/// `list_remote_plugin_shares` already treats an empty page as "no created workspace
+/// plugins" and returns `Ok(Vec::new())` gracefully.
 async fn get_created_workspace_plugins_page(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    page_token: Option<&str>,
+    _config: &RemotePluginServiceConfig,
+    _auth: &CodexAuth,
+    _page_token: Option<&str>,
 ) -> Result<RemotePluginListResponse, RemotePluginCatalogError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/workspace/created"))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    url.query_pairs_mut()
-        .append_pair("limit", &REMOTE_PLUGIN_LIST_PAGE_LIMIT.to_string());
-    if let Some(page_token) = page_token {
-        url.query_pairs_mut().append_pair("pageToken", page_token);
-    }
-    let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
-    send_and_decode(request, &url).await
-}
-
-async fn create_workspace_plugin_upload(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    filename: &str,
-    size_bytes: usize,
-    remote_plugin_id: Option<&str>,
-) -> Result<RemoteWorkspacePluginUploadUrlResponse, RemotePluginCatalogError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/public/plugins/workspace/upload-url");
-    let request = authenticated_request(config.http_request(Method::POST, &url), auth).json(
-        &RemoteWorkspacePluginUploadUrlRequest {
-            filename,
-            mime_type: "application/gzip",
-            size_bytes,
-            plugin_id: remote_plugin_id,
+    Ok(RemotePluginListResponse {
+        plugins: Vec::new(),
+        pagination: RemotePluginPagination {
+            next_page_token: None,
         },
-    );
-    send_and_decode(request, &url).await
+    })
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment in `remote.rs` for the full rationale). `save_remote_plugin_share`'s only
+/// caller of this function propagates the error via `?` before ever reaching
+/// `put_workspace_plugin_upload`, so pinning this one function is sufficient to make
+/// the whole share-upload flow inert.
+async fn create_workspace_plugin_upload(
+    _config: &RemotePluginServiceConfig,
+    _auth: &CodexAuth,
+    _filename: &str,
+    _size_bytes: usize,
+    _remote_plugin_id: Option<&str>,
+) -> Result<RemoteWorkspacePluginUploadUrlResponse, RemotePluginCatalogError> {
+    Err(RemotePluginCatalogError::NetworkDisabled)
+}
+
+/// kimcli-branding: never issues the request. Upstream this PUTs the plugin archive
+/// bytes to `upload_url` (an arbitrary, server-issued URL rather than `chatgpt_base_url`
+/// itself). `save_remote_plugin_share`'s only caller already fails earlier at
+/// `create_workspace_plugin_upload` (which is what would have supplied a real
+/// `upload_url`), but that is exactly the "trust the caller" reasoning this commit
+/// exists to eliminate -- this function still built and sent a real request on its own,
+/// so it is pinned independently, at its own top, like every other request-builder in
+/// this module.
 async fn put_workspace_plugin_upload(
-    config: &RemotePluginServiceConfig,
-    upload_url: &str,
-    archive_bytes: Vec<u8>,
+    _upload_url: &str,
+    _archive_bytes: Vec<u8>,
 ) -> Result<(), RemotePluginCatalogError> {
-    let request = config
-        .http_request(Method::PUT, upload_url)
-        .timeout(REMOTE_PLUGIN_CATALOG_TIMEOUT)
-        .header("x-ms-blob-type", "BlockBlob")
-        .header("Content-Type", "application/gzip")
-        .body(archive_bytes);
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginCatalogError::Request {
-            url: "workspace plugin upload URL".to_string(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if ![StatusCode::OK, StatusCode::CREATED].contains(&status) {
-        return Err(RemotePluginCatalogError::UnexpectedStatus {
-            url: "workspace plugin upload URL".to_string(),
-            status,
-            body,
-        });
-    }
-    Ok(())
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment in `remote.rs` for the full rationale). `save_remote_plugin_share` never
+/// reaches this call in practice since `create_workspace_plugin_upload` above already
+/// errors first, but this is pinned independently too, per-function, rather than
+/// relying on that upstream short-circuit.
 async fn finalize_workspace_plugin_upload(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    remote_plugin_id: Option<&str>,
-    body: RemoteWorkspacePluginCreateRequest,
+    _config: &RemotePluginServiceConfig,
+    _auth: &CodexAuth,
+    _remote_plugin_id: Option<&str>,
+    _body: RemoteWorkspacePluginCreateRequest,
 ) -> Result<RemoteWorkspacePluginCreateResponse, RemotePluginCatalogError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = if let Some(remote_plugin_id) = remote_plugin_id {
-        format!("{base_url}/public/plugins/workspace/{remote_plugin_id}")
-    } else {
-        format!("{base_url}/public/plugins/workspace")
-    };
-    let request = authenticated_request(config.http_request(Method::POST, &url), auth).json(&body);
-    send_and_decode(request, &url).await
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
 fn archive_filename(plugin_path: &Path) -> Result<String, RemotePluginCatalogError> {
@@ -489,29 +420,11 @@ fn archive_plugin_for_upload_with_limit(
     })
 }
 
-async fn send_and_expect_status(
-    request: RouteAwareRequestBuilder,
-    url_for_error: &str,
-    expected_statuses: &[StatusCode],
-) -> Result<(), RemotePluginCatalogError> {
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginCatalogError::Request {
-            url: url_for_error.to_string(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !expected_statuses.contains(&status) {
-        return Err(RemotePluginCatalogError::UnexpectedStatus {
-            url: url_for_error.to_string(),
-            status,
-            body,
-        });
-    }
-    Ok(())
-}
+// kimcli-branding: `send_and_expect_status` (the shared request-sending helper
+// `delete_remote_plugin_share` used to call) was removed entirely -- once that function
+// is pinned to never build a request (see its doc comment above), this had zero
+// remaining callers. Mirrors the same removal of `remote.rs`'s `send_and_decode`/
+// `authenticated_request`.
 
 #[cfg(test)]
 mod tests;

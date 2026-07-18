@@ -1,8 +1,6 @@
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
 use crate::http_client_selector::HttpClientSelector;
 use crate::loader::plugin_app_declarations_from_value;
-use crate::store::PLUGINS_CACHE_DIR;
-use crate::store::PluginStore;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
@@ -18,6 +16,9 @@ use codex_http_client::RouteAwareRequestBuilder;
 use codex_http_client::RouteAwareRequestError;
 use codex_login::CodexAuth;
 use codex_login::default_client::default_headers;
+use http::Method;
+use http::StatusCode;
+use std::sync::Arc;
 use codex_plugin::AppConnectorId;
 use codex_plugin::AppDeclaration;
 use codex_plugin::PluginCapabilitySummary;
@@ -25,8 +26,6 @@ use codex_plugin::PluginId;
 use codex_plugin::app_connector_ids_from_declarations;
 use codex_plugin::prompt_safe_plugin_description;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use http::Method;
-use http::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -34,13 +33,9 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 use tracing::instrument;
-use url::Url;
 
 mod catalog_cache;
 mod remote_installed_plugin_sync;
@@ -90,10 +85,6 @@ pub const REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_DISPLAY_NAME: &st
     "Shared with me (unlisted)";
 
 const OPENAI_CURATED_REMOTE_COLLECTION_KEY: &str = "vertical";
-const OAI_PRODUCT_SKU_HEADER: &str = "OAI-Product-Sku";
-const CODEX_PRODUCT_SKU: &str = "codex";
-const REMOTE_PLUGIN_CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
-const RECOMMENDED_PLUGINS_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_PLUGIN_LIST_PAGE_LIMIT: u32 = 200;
 const MAX_RECOMMENDED_PLUGINS: usize = 50;
 const MAX_RECOMMENDED_PLUGIN_NAME_LEN: usize = 64;
@@ -430,6 +421,16 @@ pub enum RemotePluginCatalogError {
 
     #[error("{0}")]
     CacheRemove(String),
+
+    /// kimcli-branding: returned by every mutation/single-item request-builder in this
+    /// module in place of ever building a request to `chatgpt_base_url` (see the
+    /// per-function doc comments below). List/collection-returning request-builders
+    /// return an empty result instead of this error, since an empty catalog is already
+    /// a valid, gracefully-handled outcome for every caller.
+    #[error(
+        "kimcli does not issue plugin requests to OpenAI-hosted infrastructure (chatgpt_base_url)"
+    )]
+    NetworkDisabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -443,13 +444,9 @@ pub enum RemotePluginScope {
 }
 
 impl RemotePluginScope {
-    fn api_value(self) -> &'static str {
-        match self {
-            Self::Global => "GLOBAL",
-            Self::User => "USER",
-            Self::Workspace => "WORKSPACE",
-        }
-    }
+    // kimcli-branding: `api_value` was removed entirely -- it was only called from the
+    // 3 page-fetcher leaf functions above to build a `scope` query parameter for a
+    // request that's no longer built.
 
     fn marketplace_name(self) -> &'static str {
         match self {
@@ -467,17 +464,9 @@ impl RemotePluginScope {
         }
     }
 
-    fn from_marketplace_name(name: &str) -> Option<Self> {
-        match name {
-            REMOTE_GLOBAL_MARKETPLACE_NAME => Some(Self::Global),
-            REMOTE_CREATED_BY_ME_MARKETPLACE_NAME => Some(Self::User),
-            REMOTE_WORKSPACE_MARKETPLACE_NAME
-            | REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME
-            | REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME
-            | REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME => Some(Self::Workspace),
-            _ => None,
-        }
-    }
+    // kimcli-branding: `from_marketplace_name` was removed entirely -- it was only
+    // called from `fetch_remote_plugin_skill_detail`'s marketplace-name validation,
+    // which no longer runs once that function is pinned to never build a request.
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -502,12 +491,9 @@ struct RemotePluginSkillResponse {
     interface: Option<RemotePluginSkillInterfaceResponse>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct RemotePluginSkillDetailResponse {
-    plugin_id: String,
-    name: String,
-    skill_md_contents: Option<String>,
-}
+// kimcli-branding: `RemotePluginSkillDetailResponse` was removed entirely -- it was only
+// deserialized by `fetch_remote_plugin_skill_detail`, which no longer builds the request
+// whose response it decoded.
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct RemotePluginReleaseInterfaceResponse {
@@ -700,11 +686,10 @@ struct RecommendedPluginRelease {
     app_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct RemotePluginInstalledResponse {
-    plugins: Vec<RemotePluginInstalledItem>,
-    pagination: RemotePluginPagination,
-}
+// kimcli-branding: `RemotePluginInstalledResponse` was removed entirely -- it was only
+// deserialized by `get_remote_plugin_installed_page`, which has no remaining callers
+// (see the comment above `fetch_recommended_plugins`'s doc comment near the top of this
+// file's page-fetcher section).
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RemotePluginMutationResponse {
@@ -893,23 +878,30 @@ pub async fn fetch_and_cache_global_remote_plugin_catalog(
     Ok(())
 }
 
+/// kimcli-branding: never issues the request. This is the network-level backstop behind
+/// the policy gates (`host_owned_codex_apps_enabled` / `Features::apps_enabled_for_auth` /
+/// `PluginsManager::remote_global_catalog_active`) so that a gate-bypass path (like
+/// `featured_plugin_ids_for_config`'s plugins_enabled-only check reaching
+/// `remote_legacy::fetch_remote_featured_plugin_ids`) cannot reach the network through
+/// this function either. `RecommendedPluginsMode::Legacy` is the same "no
+/// endpoint-based recommendations" value this function already returns for a live
+/// `enabled != true` response, so callers see an indistinguishable, already-handled
+/// outcome.
 #[instrument(level = "trace", skip_all)]
 pub async fn fetch_recommended_plugins(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
 ) -> Result<RecommendedPluginsMode, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/suggested"))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    url.query_pairs_mut().append_pair("scope", "GLOBAL");
-    let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth)
-        .timeout(RECOMMENDED_PLUGINS_TIMEOUT);
-    let response: RecommendedPluginsResponse = send_and_decode(request, &url).await?;
-    Ok(recommended_plugins_mode(response))
+    Ok(RecommendedPluginsMode::Legacy)
 }
 
+/// kimcli-branding: no longer reachable from production code now that
+/// `fetch_recommended_plugins` above is pinned to never build the response this parses.
+/// Kept (rather than deleted) because its own unit tests in `remote_tests.rs` still
+/// meaningfully exercise real, independent business logic (validate/dedupe/sort/cap the
+/// recommended-plugins list) that has nothing to do with the network call itself; those
+/// tests are left in place as coverage of that logic, not as HTTP-shape proof.
+#[allow(dead_code)]
 fn recommended_plugins_mode(response: RecommendedPluginsResponse) -> RecommendedPluginsMode {
     if response.enabled != Some(true) {
         return RecommendedPluginsMode::Legacy;
@@ -1197,39 +1189,17 @@ pub async fn fetch_remote_plugin_detail_with_download_urls(
     .await
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment for the full rationale). `contents: None` is already a valid "no skill
+/// content available" outcome for every caller of this function.
 pub async fn fetch_remote_plugin_skill_detail(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    marketplace_name: &str,
-    plugin_id: &str,
-    skill_name: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _marketplace_name: &str,
+    _plugin_id: &str,
+    _skill_name: &str,
 ) -> Result<RemotePluginSkillDetail, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    if RemotePluginScope::from_marketplace_name(marketplace_name).is_none() {
-        return Err(RemotePluginCatalogError::UnknownMarketplace {
-            marketplace_name: marketplace_name.to_string(),
-        });
-    }
-
-    let url = remote_plugin_skill_detail_url(config, plugin_id, skill_name)?;
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
-    let response: RemotePluginSkillDetailResponse = send_and_decode(request, &url).await?;
-    if response.plugin_id != plugin_id {
-        return Err(RemotePluginCatalogError::UnexpectedPluginId {
-            expected: plugin_id.to_string(),
-            actual: response.plugin_id,
-        });
-    }
-    if response.name != skill_name {
-        return Err(RemotePluginCatalogError::UnexpectedSkillName {
-            expected: skill_name.to_string(),
-            actual: response.name,
-        });
-    }
-
-    Ok(RemotePluginSkillDetail {
-        contents: response.skill_md_contents,
-    })
+    Ok(RemotePluginSkillDetail { contents: None })
 }
 
 async fn fetch_remote_plugin_detail_with_download_url_option(
@@ -1356,41 +1326,19 @@ fn app_declarations_from_remote_app_ids(app_ids: &[String]) -> Vec<AppDeclaratio
         .collect()
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment for the full rationale). Unlike the read-only fetch/list functions, this is
+/// a mutation with a real remote side effect the caller expects to have happened, so a
+/// fabricated success would be actively misleading (the plugin would not actually be
+/// installed/enabled on the OpenAI-hosted side); returning `NetworkDisabled` is the
+/// honest outcome.
 pub async fn install_remote_plugin(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
     _marketplace_name: &str,
-    plugin_id: &str,
+    _plugin_id: &str,
 ) -> Result<RemotePluginInstallResult, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    // Remote plugin IDs uniquely identify remote plugins, so the caller-provided
-    // marketplace name is not validated before sending the install mutation.
-
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/{plugin_id}/install"))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    url.query_pairs_mut()
-        .append_pair("includeAppsNeedingAuth", "true");
-    let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::POST, &url), auth);
-    let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
-    if response.id != plugin_id {
-        return Err(RemotePluginCatalogError::UnexpectedPluginId {
-            expected: plugin_id.to_string(),
-            actual: response.id,
-        });
-    }
-    if !response.enabled {
-        return Err(RemotePluginCatalogError::UnexpectedEnabledState {
-            plugin_id: plugin_id.to_string(),
-            expected_enabled: true,
-            actual_enabled: response.enabled,
-        });
-    }
-
-    Ok(RemotePluginInstallResult {
-        app_ids_needing_auth: response.app_ids_needing_auth,
-    })
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
 pub async fn resolve_remote_plugin_uninstall_target(
@@ -1442,96 +1390,19 @@ pub async fn resolve_remote_plugin_uninstall_target(
     })
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment for the full rationale). Like `install_remote_plugin`, this is a mutation
+/// with a real remote side effect (and a local cache-removal step that only makes
+/// sense once that side effect is confirmed), so `NetworkDisabled` is returned rather
+/// than faking success and removing local cache state for an uninstall that never
+/// actually happened server-side.
 pub async fn uninstall_remote_plugin(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    codex_home: PathBuf,
-    target: RemotePluginUninstallTarget,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _codex_home: PathBuf,
+    _target: RemotePluginUninstallTarget,
 ) -> Result<(), RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let RemotePluginUninstallTarget {
-        plugin_id,
-        remote_plugin_id,
-        fallback_capability_summary: _,
-    } = target;
-    let marketplace_name = plugin_id.marketplace_name.clone();
-    let plugin_name = plugin_id.plugin_name.clone();
-
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/ps/plugins/{remote_plugin_id}/uninstall");
-    let request = authenticated_request(config.http_request(Method::POST, &url), auth);
-    let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
-    if response.id != remote_plugin_id {
-        return Err(RemotePluginCatalogError::UnexpectedPluginId {
-            expected: remote_plugin_id,
-            actual: response.id,
-        });
-    }
-    if response.enabled {
-        return Err(RemotePluginCatalogError::UnexpectedEnabledState {
-            plugin_id: response.id,
-            expected_enabled: false,
-            actual_enabled: response.enabled,
-        });
-    }
-
-    let legacy_plugin_id = response.id;
-    tokio::task::spawn_blocking(move || {
-        remove_remote_plugin_cache(codex_home, marketplace_name, plugin_name, legacy_plugin_id)
-    })
-    .await
-    .map_err(|err| {
-        RemotePluginCatalogError::CacheRemove(format!(
-            "failed to join remote plugin cache removal task: {err}"
-        ))
-    })?
-    .map_err(RemotePluginCatalogError::CacheRemove)?;
-
-    Ok(())
-}
-
-fn remove_remote_plugin_cache(
-    codex_home: PathBuf,
-    marketplace_name: String,
-    plugin_name: String,
-    legacy_plugin_id: String,
-) -> Result<(), String> {
-    let store = PluginStore::try_new(codex_home.clone())
-        .map_err(|err| format!("failed to resolve remote plugin cache root: {err}"))?;
-    let plugin_id =
-        PluginId::new(plugin_name.clone(), marketplace_name.clone()).map_err(|err| {
-            format!(
-                "invalid remote plugin cache id for `{plugin_name}` in `{marketplace_name}`: {err}"
-            )
-        })?;
-    let plugin_cache_root = store.plugin_base_root(&plugin_id);
-    store.uninstall(&plugin_id).map_err(|err| {
-        format!(
-            "failed to remove remote plugin cache entry {}: {err}",
-            plugin_cache_root.display()
-        )
-    })?;
-
-    let legacy_remote_plugin_cache_root = codex_home
-        .join(PLUGINS_CACHE_DIR)
-        .join(marketplace_name)
-        .join(legacy_plugin_id);
-    if legacy_remote_plugin_cache_root != plugin_cache_root.as_path()
-        && legacy_remote_plugin_cache_root.exists()
-    {
-        let result = if legacy_remote_plugin_cache_root.is_dir() {
-            fs::remove_dir_all(&legacy_remote_plugin_cache_root)
-        } else {
-            fs::remove_file(&legacy_remote_plugin_cache_root)
-        };
-        result.map_err(|err| {
-            format!(
-                "failed to remove remote plugin cache entry {}: {err}",
-                legacy_remote_plugin_cache_root.display()
-            )
-        })?;
-    }
-    Ok(())
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
 fn build_remote_plugin_summary(
@@ -1794,43 +1665,31 @@ async fn fetch_directory_plugins_for_scope_with_collection(
     .await
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment for the full rationale). `get_remote_plugin_list_page` below is already
+/// pinned to the same effect, so this is a belt-and-suspenders pin at the paginating
+/// orchestrator too -- the invariant is that every request-builder in this file is
+/// individually inert, not merely inert-by-relying-on-a-callee. An empty Vec is
+/// indistinguishable from a live "no pages" result to every caller.
 async fn fetch_directory_plugins_for_scope_with_optional_collection(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    scope: RemotePluginScope,
-    collection: Option<&str>,
+    _config: &RemotePluginServiceConfig,
+    _auth: &CodexAuth,
+    _scope: RemotePluginScope,
+    _collection: Option<&str>,
 ) -> Result<Vec<RemotePluginDirectoryItem>, RemotePluginCatalogError> {
-    let mut plugins = Vec::new();
-    let mut page_token = None;
-    loop {
-        let response =
-            get_remote_plugin_list_page(config, auth, scope, page_token.as_deref(), collection)
-                .await?;
-        plugins.extend(response.plugins);
-        let Some(next_page_token) = response.pagination.next_page_token else {
-            break;
-        };
-        page_token = Some(next_page_token);
-    }
-    Ok(plugins)
+    Ok(Vec::new())
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment for the full rationale). Same belt-and-suspenders reasoning as
+/// `fetch_directory_plugins_for_scope_with_optional_collection` /
+/// `fetch_installed_plugins_for_scope_with_download_url` above -- pinned at this
+/// paginating orchestrator too, not just at `get_remote_shared_workspace_plugins_page`.
 async fn fetch_shared_workspace_plugins(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
+    _config: &RemotePluginServiceConfig,
+    _auth: &CodexAuth,
 ) -> Result<Vec<RemotePluginDirectoryItem>, RemotePluginCatalogError> {
-    let mut plugins = Vec::new();
-    let mut page_token = None;
-    loop {
-        let response =
-            get_remote_shared_workspace_plugins_page(config, auth, page_token.as_deref()).await?;
-        plugins.extend(response.plugins);
-        let Some(next_page_token) = response.pagination.next_page_token else {
-            break;
-        };
-        page_token = Some(next_page_token);
-    }
-    Ok(plugins)
+    Ok(Vec::new())
 }
 
 async fn fetch_installed_plugins_for_scope(
@@ -1844,180 +1703,72 @@ async fn fetch_installed_plugins_for_scope(
     .await
 }
 
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment for the full rationale). `get_remote_plugin_installed_page` below is already
+/// pinned to the same effect; this is the same belt-and-suspenders pin at the
+/// paginating orchestrator as `fetch_directory_plugins_for_scope_with_optional_collection`
+/// above.
 async fn fetch_installed_plugins_for_scope_with_download_url(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    scope: RemotePluginScope,
-    include_download_urls: bool,
+    _config: &RemotePluginServiceConfig,
+    _auth: &CodexAuth,
+    _scope: RemotePluginScope,
+    _include_download_urls: bool,
 ) -> Result<Vec<RemotePluginInstalledItem>, RemotePluginCatalogError> {
-    let mut plugins = Vec::new();
-    let mut page_token = None;
-    loop {
-        let response = get_remote_plugin_installed_page(
-            config,
-            auth,
-            scope,
-            page_token.as_deref(),
-            include_download_urls,
-        )
-        .await?;
-        plugins.extend(response.plugins);
-        let Some(next_page_token) = response.pagination.next_page_token else {
-            break;
-        };
-        page_token = Some(next_page_token);
-    }
-    Ok(plugins)
+    Ok(Vec::new())
 }
 
-async fn get_remote_plugin_list_page(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    scope: RemotePluginScope,
-    page_token: Option<&str>,
-    collection: Option<&str>,
-) -> Result<RemotePluginListResponse, RemotePluginCatalogError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/list"))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    url.query_pairs_mut()
-        .append_pair("scope", scope.api_value())
-        .append_pair("limit", &REMOTE_PLUGIN_LIST_PAGE_LIMIT.to_string());
-    if let Some(collection) = collection {
-        url.query_pairs_mut().append_pair("collection", collection);
-    }
-    if let Some(page_token) = page_token {
-        url.query_pairs_mut().append_pair("pageToken", page_token);
-    }
-    let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
-    send_and_decode(request, &url).await
-}
+// kimcli-branding: `get_remote_plugin_list_page`, `get_remote_shared_workspace_plugins_page`,
+// and `get_remote_plugin_installed_page` were removed entirely -- once their paginating
+// orchestrators (`fetch_directory_plugins_for_scope_with_optional_collection`,
+// `fetch_shared_workspace_plugins`, `fetch_installed_plugins_for_scope_with_download_url`
+// above) are themselves pinned to never call them, they had zero remaining callers.
 
-async fn get_remote_shared_workspace_plugins_page(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    page_token: Option<&str>,
-) -> Result<RemotePluginListResponse, RemotePluginCatalogError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/workspace/shared"))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    url.query_pairs_mut()
-        .append_pair("limit", &REMOTE_PLUGIN_LIST_PAGE_LIMIT.to_string());
-    if let Some(page_token) = page_token {
-        url.query_pairs_mut().append_pair("pageToken", page_token);
-    }
-    let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
-    send_and_decode(request, &url).await
-}
-
-async fn get_remote_plugin_installed_page(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    scope: RemotePluginScope,
-    page_token: Option<&str>,
-    include_download_urls: bool,
-) -> Result<RemotePluginInstalledResponse, RemotePluginCatalogError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/installed"))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    url.query_pairs_mut()
-        .append_pair("scope", scope.api_value());
-    if include_download_urls {
-        url.query_pairs_mut()
-            .append_pair("includeDownloadUrls", "true");
-    }
-    if let Some(page_token) = page_token {
-        url.query_pairs_mut().append_pair("pageToken", page_token);
-    }
-    let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
-    send_and_decode(request, &url).await
-}
-
+/// kimcli-branding: never issues the request (see `fetch_recommended_plugins`'s doc
+/// comment for the full rationale). Unlike the page-fetchers above, this returns a
+/// single item with no natural "empty" value, so every caller
+/// (`fetch_remote_plugin_detail*`, `resolve_remote_plugin_uninstall_target`) instead
+/// sees `NetworkDisabled` propagate up through its own `?`.
 async fn fetch_plugin_detail(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    plugin_id: &str,
-    include_download_urls: bool,
+    _config: &RemotePluginServiceConfig,
+    _auth: &CodexAuth,
+    _plugin_id: &str,
+    _include_download_urls: bool,
 ) -> Result<RemotePluginDirectoryItem, RemotePluginCatalogError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/{plugin_id}"))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    if include_download_urls {
-        url.query_pairs_mut()
-            .append_pair("includeDownloadUrls", "true");
-    }
-    let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
-    send_and_decode(request, &url).await
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
-fn remote_plugin_skill_detail_url(
-    config: &RemotePluginServiceConfig,
-    plugin_id: &str,
-    skill_name: &str,
-) -> Result<String, RemotePluginCatalogError> {
-    let mut url = Url::parse(config.chatgpt_base_url.trim_end_matches('/'))
-        .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    {
-        let mut segments = url
-            .path_segments_mut()
-            .map_err(|()| RemotePluginCatalogError::InvalidBaseUrlPath)?;
-        segments.pop_if_empty();
-        segments.push("ps");
-        segments.push("plugins");
-        segments.push(plugin_id);
-        segments.push("skills");
-        segments.push(skill_name);
-    }
-    Ok(url.to_string())
+// kimcli-branding: `remote_plugin_skill_detail_url` was removed entirely -- once
+// `fetch_remote_plugin_skill_detail` is pinned to never build a request (above), it had
+// zero remaining callers.
+
+/// kimcli-branding override: unconditionally disabled.
+///
+/// Upstream this validates that `auth` is present and Codex/ChatGPT-backend, then returns
+/// it so the caller can attach it to a real request. Every one of this function's 8
+/// callers in this file (`fetch_remote_marketplaces`, `fetch_and_cache_global_remote_plugin_catalog`,
+/// `has_cached_global_remote_plugin_catalog`, `fetch_openai_curated_remote_collection_marketplace`,
+/// `fetch_remote_installed_plugins`, `fetch_remote_plugin_share_context`,
+/// `fetch_remote_plugin_detail_with_download_url_option`,
+/// `resolve_remote_plugin_uninstall_target`) uses the returned `auth` for nothing but
+/// gating/attaching a subsequent `chatgpt_base_url` request -- none does non-network work
+/// with it (`has_cached_global_remote_plugin_catalog`'s local-cache check is itself only
+/// meaningful for network-sourced cache data, which this fork never populates). So this
+/// is hard-pinned to always return `Err`, regardless of whether `auth` is present or
+/// Codex/ChatGPT-backend: it is the single chokepoint both `fetch_remote_marketplaces`
+/// and `fetch_and_cache_global_remote_plugin_catalog` open with, so this alone inerts
+/// both entry points even before their own leaf request-builders are reached. Kept as a
+/// small, clearly-commented override (not a deleted/renamed function), same style as
+/// `host_owned_codex_apps_enabled` / `Features::apps_enabled_for_auth` /
+/// `PluginsManager::remote_global_catalog_active`. `auth` is intentionally unused (kept
+/// in the signature so this stays a drop-in replacement for every existing call site).
+fn ensure_chatgpt_auth(_auth: Option<&CodexAuth>) -> Result<&CodexAuth, RemotePluginCatalogError> {
+    Err(RemotePluginCatalogError::NetworkDisabled)
 }
 
-fn ensure_chatgpt_auth(auth: Option<&CodexAuth>) -> Result<&CodexAuth, RemotePluginCatalogError> {
-    let Some(auth) = auth else {
-        return Err(RemotePluginCatalogError::AuthRequired);
-    };
-    if !auth.uses_codex_backend() {
-        return Err(RemotePluginCatalogError::UnsupportedAuthMode);
-    }
-    Ok(auth)
-}
-
-fn authenticated_request(
-    request: RouteAwareRequestBuilder,
-    auth: &CodexAuth,
-) -> RouteAwareRequestBuilder {
-    request
-        .timeout(REMOTE_PLUGIN_CATALOG_TIMEOUT)
-        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers())
-        .header(OAI_PRODUCT_SKU_HEADER, CODEX_PRODUCT_SKU)
-}
-
-async fn send_and_decode<T: for<'de> Deserialize<'de>>(
-    request: RouteAwareRequestBuilder,
-    url: &str,
-) -> Result<T, RemotePluginCatalogError> {
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginCatalogError::Request {
-            url: url.to_string(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(RemotePluginCatalogError::UnexpectedStatus {
-            url: url.to_string(),
-            status,
-            body,
-        });
-    }
-
-    serde_json::from_str(&body).map_err(|source| RemotePluginCatalogError::Decode {
-        url: url.to_string(),
-        source,
-    })
-}
+// kimcli-branding: `authenticated_request`/`send_and_decode`, the shared
+// request-building/sending helpers every function above used to funnel through, were
+// removed entirely -- once every leaf request-builder in this file is individually
+// pinned to never call them (see each function's own doc comment above), they had zero
+// remaining callers. Deleting them (rather than leaving unreachable network-I/O code
+// sitting in the module) mirrors how earlier kimcli-branding passes handled other
+// fully-dead code, e.g. the self-update kill deleting tui/src/npm_registry.rs wholesale.
