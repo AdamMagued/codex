@@ -823,6 +823,39 @@ impl ChatComposer {
         self.draft.textarea.is_empty() && !self.draft.is_bash_mode && self.attachments.is_empty()
     }
 
+    /// Clears the current draft: text, cursor, bash-mode flag, pending pastes, mention
+    /// bindings, and local image attachments. Called on a second, confirming Escape press
+    /// with a non-empty composer (see the `KeyCode::Esc` branch in
+    /// `handle_key_event_without_popup`, and `DraftState::escape_clear_armed`).
+    ///
+    /// Resets the same set of fields [`Self::set_text_content_with_mention_bindings`] resets
+    /// when swapping in a whole new draft, so this can't leave the composer in a partially
+    /// cleared state -- e.g. still flagged as bash mode with no leading `!` in the text, or
+    /// holding attachment placeholders whose backing text was just erased.
+    ///
+    /// `TextArea::set_text_clearing_elements("")` clamps the *existing* cursor into the new
+    /// (empty) text's valid byte range, which happens to always land it at 0 for an empty
+    /// string (`old_cursor.clamp(0, 0) == 0`) -- but the explicit `set_cursor(0)` below is
+    /// kept anyway rather than relying on that clamp side effect, matching the same explicit
+    /// pattern used at every other full-draft-reset call site in this file (see
+    /// `set_text_content_with_mention_bindings` and `prepare_submission_text_with_options`'s
+    /// restore-on-validation-failure paths).
+    fn clear_draft(&mut self) {
+        self.draft.textarea.set_text_clearing_elements("");
+        self.draft.textarea.set_cursor(0);
+        self.draft.is_bash_mode = false;
+        self.draft.pending_pastes.clear();
+        self.draft.mention_bindings.clear();
+        self.attachments
+            .reset_local_images(Vec::new(), &mut self.draft.textarea);
+        // Defensive: also clear here (not just in the `else` branch of the Esc dispatch in
+        // `handle_key_event_without_popup`) so a leftover `true` can never survive a clear and
+        // cause a *subsequent, unrelated* single Escape to be misread as the confirming second
+        // press -- e.g. if something else repopulates the composer programmatically (not via a
+        // keypress) immediately after this clear.
+        self.draft.escape_clear_armed = false;
+    }
+
     /// Record local persistent-history metadata so the composer can navigate
     /// cross-session history.
     pub(crate) fn set_history_metadata(
@@ -3148,8 +3181,66 @@ impl ChatComposer {
                     self.footer.mode = next_mode;
                     return (InputResult::None, true);
                 }
+            } else if !self.draft.is_bash_mode && !self.draft.textarea.is_vim_normal_mode() {
+                // A *second*, immediately-following Escape on a non-empty composer clears the
+                // draft. Before this fix, Escape here was a complete no-op: this whole branch
+                // didn't exist, so the key fell all the way through to `handle_input_basic`
+                // below, which forwards unhandled keys to the textarea's raw `input()` -- and a
+                // plain Esc there matches no editor keymap binding, so
+                // `TextArea::input_with_keymap` silently no-ops (falls through to its final
+                // `tracing::debug!("Unhandled key event...")`). So the composer's text and
+                // cursor were left completely untouched: internally consistent with each other,
+                // but not what a user pressing Escape expects.
+                //
+                // Concretely, this is what produced the reported garbling: type "/effort" (the
+                // cursor legitimately ends at byte 7, right after the text); press Escape
+                // expecting a blank composer, but the no-op leaves both text and cursor exactly
+                // as they were; type "/model" next, which inserts at that still-live cursor
+                // position 7 and produces "/effort/model" (no cursor/text desync -- the cursor
+                // was never wrong relative to the text, it just was never reset); continuing to
+                // type "reply with..." keeps appending, producing the exact
+                // "/effort/modelreply with..." garbling from the QA report.
+                //
+                // Why a *second* press rather than clearing immediately: a single leading Escape
+                // is relied on elsewhere as a safe, text-preserving no-op -- most notably
+                // `submit_current_composer` in chatwidget/tests/slash_commands.rs, a shared test
+                // helper used 20+ times that presses Escape once (defensively, to dismiss any
+                // popup a slash command may have triggered) immediately followed by Enter to
+                // submit, including with plain non-slash text. Clearing on the first press would
+                // have silently turned that into "wipe the draft, then submit nothing" for every
+                // one of those call sites -- exactly the kind of regression this whole engagement
+                // cannot compile or test for and so must avoid by construction. Requiring a
+                // second, immediate Escape (tracked by `DraftState::escape_clear_armed`, reset by
+                // any other key -- see the `else` branch below) keeps a single Escape exactly as
+                // inert as it already was, while still giving the user a real way to clear a
+                // leftover draft: press Escape twice.
+                if self.draft.escape_clear_armed {
+                    self.clear_draft();
+                    self.footer.mode = reset_mode_after_activity(self.footer.mode);
+                    return (InputResult::None, true);
+                }
+                self.draft.escape_clear_armed = true;
+                // Deliberately fall through (not an early return) so this first Escape still
+                // gets the same paste-burst flush/window-clear handling it already received via
+                // `handle_input_basic` before this branch existed -- preserving that first-press
+                // behavior byte-for-byte, not just its "text stays put" end state.
+                //
+                // Skipped in Vim normal mode: pressing Esc while already in Vim normal mode is
+                // an idiomatic, harmless no-op in real Vim (many Vim users tap it reflexively),
+                // so unexpectedly discarding a buffered draft there would be a surprising data
+                // loss. Vim *insert*-mode Escape never reaches this branch at all -- it's
+                // intercepted earlier by `should_handle_vim_insert_escape`, which routes it to
+                // the textarea's own mode transition instead.
+                //
+                // Skipped in bash/shell mode (`is_bash_mode`): that mode already has its own
+                // dedicated Escape handling just above (flush any pending paste-burst text
+                // first, then exit bash mode only if the buffer is empty *after* that flush --
+                // see `esc_keeps_shell_mode_when_paste_burst_flushes_pending_text`, which
+                // depends on a non-empty post-flush shell command surviving Escape rather than
+                // being cleared).
             }
         } else {
+            self.draft.escape_clear_armed = false;
             self.footer.mode = reset_mode_after_activity(self.footer.mode);
         }
         if self.queue_keys.is_pressed(key_event)
@@ -5433,8 +5524,126 @@ mod tests {
 
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
+        // A single Escape on a non-empty composer only arms the clear-on-second-Escape gate; it
+        // must not touch the draft by itself (see `escape_clears_composer_and_resets_cursor_for_next_input`
+        // for why: a single Escape is relied on elsewhere as a safe, text-preserving no-op).
+        assert!(!composer.is_empty());
+        assert_eq!(composer.current_text(), "d");
+        assert!(composer.draft.escape_clear_armed);
         assert_eq!(composer.footer.mode, FooterMode::ComposerEmpty);
         assert!(!composer.footer.esc_backtrack_hint);
+    }
+
+    /// Regression test for a QA-reported bug: pressing Escape on a non-empty composer used to
+    /// be a silent no-op (the key fell all the way through to the textarea's raw `input()`,
+    /// which has no binding for a plain `Esc`), so text typed afterward was inserted at
+    /// whatever cursor position was left over from before Escape -- e.g. typing "/effort",
+    /// pressing Escape expecting a blank composer, then typing "/model" produced the garbled
+    /// "/effort/model" (cursor legitimately at the end of "/effort", not desynced, just never
+    /// reset) rather than a clean "/model". A *second*, immediately-following Escape now clears
+    /// the draft (text back to "", cursor back to 0) so that subsequent typing starts from a
+    /// real blank slate. (A single Escape press stays a no-op -- see
+    /// `escape_single_press_preserves_draft_and_is_safe_before_submit` -- since that's relied on
+    /// elsewhere as safe, text-preserving behavior.)
+    #[test]
+    fn escape_clears_composer_and_resets_cursor_for_next_input() {
+        let (mut composer, _rx) = new_test_composer();
+
+        type_chars_humanlike(&mut composer, &['/', 'e', 'f', 'f', 'o', 'r', 't']);
+        assert_eq!(composer.current_text(), "/effort");
+        assert_eq!(composer.draft.textarea.cursor(), "/effort".len());
+
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let _ = composer.handle_key_event(esc);
+        assert_eq!(composer.current_text(), "/effort", "first Escape only arms the clear");
+        let _ = composer.handle_key_event(esc);
+
+        assert!(composer.is_empty());
+        assert_eq!(composer.current_text(), "");
+        assert_eq!(composer.draft.textarea.cursor(), 0);
+        assert!(!composer.draft.escape_clear_armed);
+
+        type_chars_humanlike(&mut composer, &['/', 'm', 'o', 'd', 'e', 'l']);
+
+        // The bug produced "/effort/model" here; a real clear means this is just "/model".
+        assert_eq!(composer.current_text(), "/model");
+        assert_eq!(composer.draft.textarea.cursor(), "/model".len());
+    }
+
+    /// Directly regression-tests the exact call shape relied on by
+    /// `submit_current_composer` in chatwidget/tests/slash_commands.rs (a single Escape
+    /// immediately followed by Enter, Enter -- used 20+ times to submit test messages,
+    /// including plain non-slash text): a single Escape on a non-empty composer must leave the
+    /// draft completely untouched so that pattern still submits real content instead of an
+    /// empty message.
+    #[test]
+    fn escape_single_press_preserves_draft_and_is_safe_before_submit() {
+        let (mut composer, mut rx) = new_test_composer();
+
+        type_chars_humanlike(&mut composer, &['o', 'k']);
+        assert_eq!(composer.current_text(), "ok");
+
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            composer.current_text(),
+            "ok",
+            "a single Escape must not clear the draft"
+        );
+
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::Submitted { text, .. } => assert_eq!(text, "ok"),
+            other => panic!("expected Enter to submit \"ok\", got {other:?}"),
+        }
+        let _ = rx.try_recv();
+    }
+
+    /// Escape must not clear a buffered shell command: bash mode has its own dedicated Escape
+    /// handling (flush any pending paste-burst text, then exit bash mode only if the buffer is
+    /// empty *after* that flush -- see `esc_keeps_shell_mode_when_paste_burst_flushes_pending_text`
+    /// above), so a non-empty shell command should survive Escape rather than being wiped by the
+    /// new general "clear on Escape" behavior.
+    #[test]
+    fn escape_does_not_clear_nonempty_bash_mode_command() {
+        let (mut composer, _rx) = new_test_composer();
+
+        type_chars_humanlike(&mut composer, &['!', 'l', 's']);
+        assert!(composer.draft.is_bash_mode);
+        assert_eq!(composer.current_text(), "!ls");
+
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(composer.draft.is_bash_mode);
+        assert_eq!(composer.current_text(), "!ls");
+    }
+
+    /// Escape must not clear a buffered draft while already in Vim normal mode: pressing Esc
+    /// when already in Vim normal mode is an idiomatic, harmless no-op in real Vim, so it must
+    /// not discard typed text here either.
+    #[test]
+    fn escape_does_not_clear_draft_in_vim_normal_mode() {
+        let (mut composer, _rx) = new_test_composer();
+        composer.set_vim_enabled(/*enabled*/ true);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.set_text_content("hello".to_string(), Vec::new(), Vec::new());
+        composer
+            .draft
+            .textarea
+            .set_cursor(composer.draft.textarea.text().len());
+        // Leave Vim insert mode first (this Escape is intercepted separately and transitions
+        // Insert -> Normal; it is not the branch under test here).
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(composer.draft.textarea.is_vim_normal_mode());
+        assert_eq!(composer.current_text(), "hello");
+
+        // A second Escape, now already in Vim normal mode, must be a no-op for the draft.
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(composer.draft.textarea.is_vim_normal_mode());
+        assert_eq!(composer.current_text(), "hello");
     }
 
     #[test]

@@ -19,6 +19,18 @@ pub(super) struct DraftState {
     pub(super) disable_paste_burst: bool,
     pub(super) mention_bindings: HashMap<u64, ComposerMentionBinding>,
     pub(super) recent_submission_mention_bindings: Vec<MentionBinding>,
+    /// Set by a first Escape press on a non-empty composer (outside popups, bash mode, and Vim
+    /// normal mode); a second, immediately-following Escape press while this is still set
+    /// clears the draft. See the `KeyCode::Esc` branch in `handle_key_event_without_popup`.
+    ///
+    /// This exists as a two-step "arm, then confirm" gate rather than clearing on the first
+    /// Escape so that a single leading Escape stays exactly as safe/inert as it already is
+    /// everywhere else in this codebase (and its test suite) that presses Escape defensively
+    /// before another action -- most notably `submit_current_composer` in
+    /// chatwidget/tests/slash_commands.rs, which presses Escape once (to dismiss any popup)
+    /// immediately followed by Enter to submit; a single-press "Escape clears" design would
+    /// have silently turned that into "clear the draft, then submit nothing."
+    pub(super) escape_clear_armed: bool,
 }
 
 impl DraftState {
@@ -34,6 +46,7 @@ impl DraftState {
             disable_paste_burst: false,
             mention_bindings: HashMap::new(),
             recent_submission_mention_bindings: Vec::new(),
+            escape_clear_armed: false,
         }
     }
 }
