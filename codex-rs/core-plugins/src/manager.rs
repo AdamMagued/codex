@@ -2791,6 +2791,7 @@ fn remote_plugin_mutation_error_type(err: &RemotePluginMutationError) -> &'stati
         RemotePluginMutationError::UnexpectedEnabledState { .. } => {
             "remote_mutation_unexpected_enabled_state"
         }
+        RemotePluginMutationError::NetworkDisabled => "remote_mutation_network_disabled",
     }
 }
 
