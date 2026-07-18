@@ -1,4 +1,13 @@
-//! Shared formatting for user-facing `codex resume` command hints.
+//! Shared formatting for user-facing `kimcli resume` command hints.
+//!
+//! kimcli-branding: this is the single source of the "To continue this session, run ..." exit
+//! hint and its siblings shown throughout codex-rs/tui (main.rs's exit message,
+//! app/session_lifecycle.rs, app/event_dispatch.rs, chatwidget.rs's thread-rename hint). It used
+//! to hardcode "codex resume ...", which told the user to run a command that does not exist in
+//! this fork -- the installed binary is `kimcli` (see cli/Cargo.toml's `[[bin]] name = "kimcli"`;
+//! there is no `codex` binary), and `kimcli resume <target>` is the real, working equivalent
+//! (same clap parser, just built under the `kimcli` binary name). Rebranded so the hint actually
+//! works when copy-pasted.
 
 use codex_protocol::ThreadId;
 use codex_shell_command::parse_command::shlex_join;
@@ -12,9 +21,9 @@ pub fn resume_command(thread_name: Option<&str>, thread_id: Option<ThreadId>) ->
         let needs_double_dash = target.starts_with('-');
         let escaped = shlex_join(&[target]);
         if needs_double_dash {
-            format!("codex resume -- {escaped}")
+            format!("kimcli resume -- {escaped}")
         } else {
-            format!("codex resume {escaped}")
+            format!("kimcli resume {escaped}")
         }
     })
 }
@@ -23,7 +32,7 @@ pub fn resume_hint(thread_name: Option<&str>, thread_id: Option<ThreadId>) -> Op
     let thread_id = thread_id?;
     match thread_name.filter(|name| !name.is_empty()) {
         Some(thread_name) => Some(format!(
-            "codex resume, then select {thread_name} ({thread_id})"
+            "kimcli resume, then select {thread_name} ({thread_id})"
         )),
         None => resume_command(/*thread_name*/ None, Some(thread_id)),
     }
@@ -38,7 +47,7 @@ mod tests {
     fn prefers_name_over_id() {
         let thread_id = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap();
         let command = resume_command(Some("my-thread"), Some(thread_id));
-        assert_eq!(command, Some("codex resume my-thread".to_string()));
+        assert_eq!(command, Some("kimcli resume my-thread".to_string()));
     }
 
     #[test]
@@ -47,7 +56,7 @@ mod tests {
         let command = resume_command(/*thread_name*/ None, Some(thread_id));
         assert_eq!(
             command,
-            Some("codex resume 123e4567-e89b-12d3-a456-426614174000".to_string())
+            Some("kimcli resume 123e4567-e89b-12d3-a456-426614174000".to_string())
         );
     }
 
@@ -62,14 +71,14 @@ mod tests {
         let command = resume_command(Some("-starts-with-dash"), /*thread_id*/ None);
         assert_eq!(
             command,
-            Some("codex resume -- -starts-with-dash".to_string())
+            Some("kimcli resume -- -starts-with-dash".to_string())
         );
 
         let command = resume_command(Some("two words"), /*thread_id*/ None);
-        assert_eq!(command, Some("codex resume 'two words'".to_string()));
+        assert_eq!(command, Some("kimcli resume 'two words'".to_string()));
 
         let command = resume_command(Some("quote'case"), /*thread_id*/ None);
-        assert_eq!(command, Some("codex resume \"quote'case\"".to_string()));
+        assert_eq!(command, Some("kimcli resume \"quote'case\"".to_string()));
     }
 
     #[test]
@@ -79,7 +88,7 @@ mod tests {
         assert_eq!(
             hint,
             Some(
-                "codex resume, then select my-thread (123e4567-e89b-12d3-a456-426614174000)"
+                "kimcli resume, then select my-thread (123e4567-e89b-12d3-a456-426614174000)"
                     .to_string()
             )
         );
@@ -91,7 +100,7 @@ mod tests {
         let hint = resume_hint(/*thread_name*/ None, Some(thread_id));
         assert_eq!(
             hint,
-            Some("codex resume 123e4567-e89b-12d3-a456-426614174000".to_string())
+            Some("kimcli resume 123e4567-e89b-12d3-a456-426614174000".to_string())
         );
     }
 
