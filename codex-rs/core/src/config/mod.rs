@@ -84,6 +84,7 @@ use codex_memories_read::memory_root;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
+use codex_model_provider_info::OPENAI_OAUTH_PROVIDER_ID;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
@@ -3550,9 +3551,17 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
-        let model_provider_id = model_provider
-            .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
+        // kimcli-branding: hard-pinned to the built-in `openai-oauth` provider.
+        //
+        // Upstream this is `model_provider.or(cfg.model_provider).unwrap_or("openai")`,
+        // i.e. the CLI flag or `model_provider` in config.toml picks the backend.
+        // kimcli exists to run entirely on the local `openai-oauth` proxy (the
+        // user's ChatGPT session, no API key), so the resolved provider is pinned
+        // here — the single chokepoint every caller shares — rather than left to a
+        // default that a stray config value or flag could silently override.
+        // `model_provider` / `cfg.model_provider` are intentionally ignored.
+        let _ignored_configured_provider = model_provider.or(cfg.model_provider);
+        let model_provider_id = OPENAI_OAUTH_PROVIDER_ID.to_string();
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {

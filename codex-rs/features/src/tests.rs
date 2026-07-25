@@ -198,8 +198,9 @@ fn multi_agent_is_stable_and_enabled_by_default() {
 }
 
 #[test]
-fn enable_fanout_is_under_development() {
-    assert_eq!(Feature::SpawnCsv.stage(), Stage::UnderDevelopment);
+fn enable_fanout_is_removed() {
+    // Upstream 0.146 retired this flag; the assertion tracks the shipped stage.
+    assert_eq!(Feature::SpawnCsv.stage(), Stage::Removed);
     assert_eq!(Feature::SpawnCsv.default_enabled(), false);
 }
 

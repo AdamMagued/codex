@@ -79,18 +79,23 @@ kimcli  ──▶  openai-oauth proxy (127.0.0.1:10531)  ──▶  ChatGPT back
  (agent)         (uses ~/.codex/auth.json)               (your account, free)
 ```
 
-`~/.kim/codex/config.toml` (written by the installer) points kimcli at the proxy:
+This routing is **compiled into kimcli** — `openai-oauth` is a built-in provider and
+is hard-pinned as the one kimcli resolves, so there is no provider to configure and
+no way to accidentally route somewhere paid. Every session prints it up front:
+
+```
+provider: free · your ChatGPT account via openai-oauth
+```
+
+kimcli also runs **code-mode only** (the coding-agent tool mode is pinned on).
+
+The only thing you configure is the model, in `~/.kim/codex/config.toml`:
 
 ```toml
 model = "gpt-5.6-sol"
-model_provider = "openai-oauth"
-
-[model_providers.openai-oauth]
-name = "OpenAI (ChatGPT via openai-oauth)"
-base_url = "http://127.0.0.1:10531/v1"
-wire_api = "responses"
-requires_openai_auth = false
 ```
+
+If you run the proxy on a non-default host/port, set `OPENAI_OAUTH_BASE_URL`.
 
 > **Note:** Using a ChatGPT subscription for API‑style access is against OpenAI's
 > terms of service and may be rate‑limited or blocked at their discretion. Use at

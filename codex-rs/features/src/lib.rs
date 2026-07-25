@@ -380,6 +380,20 @@ impl Features {
     }
 
     pub fn enabled(&self, f: Feature) -> bool {
+        // kimcli-branding: code mode is the only mode.
+        //
+        // Upstream, `code_mode` / `code_mode_only` are opt-in feature flags
+        // (`Stage::UnderDevelopment`, `default_enabled: false`) that select the
+        // tool mode in `codex_core::tools::effective_tool_mode` — Direct when off,
+        // CodeModeOnly when `code_mode_only` is on. kimcli ships as a code-mode-only
+        // agent, so both are pinned true at this single chokepoint every caller
+        // shares, rather than defaulted on where a config value could turn them
+        // back off. (Note: a model's own `model_info.tool_mode`, when set, still
+        // takes precedence inside `effective_tool_mode` — that is upstream
+        // per-model routing, not a user-facing switch.)
+        if matches!(f, Feature::CodeMode | Feature::CodeModeOnly) {
+            return true;
+        }
         self.enabled.contains(&f)
     }
 

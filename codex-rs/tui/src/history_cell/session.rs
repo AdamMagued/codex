@@ -338,6 +338,9 @@ impl HistoryCell for SessionHeaderHistoryCell {
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
         const DIR_LABEL: &str = "directory:";
         const PERMISSIONS_LABEL: &str = "permissions:";
+        // kimcli-branding: every session runs on the local openai-oauth proxy
+        // (the user's ChatGPT account, no API key), so say so up front.
+        const PROVIDER_LABEL: &str = "provider:";
         let label_width = if self.yolo_mode {
             DIR_LABEL.len().max(PERMISSIONS_LABEL.len())
         } else {
@@ -376,10 +379,18 @@ impl HistoryCell for SessionHeaderHistoryCell {
         let dir = self.format_directory(Some(dir_max_width));
         let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir)];
 
+        let provider_label = format!("{PROVIDER_LABEL:<label_width$}");
+        let provider_spans = vec![
+            Span::from(format!("{provider_label} ")).dim(),
+            "free".green().bold(),
+            Span::from(" · your ChatGPT account via openai-oauth").dim(),
+        ];
+
         let mut lines = vec![
             make_row(title_spans),
             make_row(Vec::new()),
             make_row(model_spans),
+            make_row(provider_spans),
             make_row(dir_spans),
         ];
 
@@ -408,6 +419,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
                     .map(|reasoning| format!(" {reasoning}"))
                     .unwrap_or_default()
             )),
+            Line::from("provider: free · your ChatGPT account via openai-oauth"),
             Line::from(format!(
                 "directory: {}",
                 self.format_directory(/*max_width*/ None)

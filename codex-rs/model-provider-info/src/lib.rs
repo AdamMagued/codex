@@ -48,6 +48,19 @@ pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER: &str = "x-amzn-mantle-client-agent";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
+/// kimcli-branding: the ONLY provider kimcli ever uses.
+///
+/// kimcli routes every request through the local `openai-oauth` proxy
+/// (<https://github.com/EvanZhouDev/openai-oauth>), which is backed by the user's
+/// ChatGPT OAuth session rather than a paid API key. This provider is built in
+/// (not user-configurable) and is hard-pinned as the resolved provider in
+/// `codex_core::config` so no config value or CLI flag can route kimcli anywhere
+/// else. Start the proxy with `npx openai-oauth@latest`.
+pub const OPENAI_OAUTH_PROVIDER_ID: &str = "openai-oauth";
+const OPENAI_OAUTH_PROVIDER_NAME: &str = "OpenAI (ChatGPT via openai-oauth)";
+/// Default endpoint the `openai-oauth` proxy binds to (its `--host`/`--port` defaults).
+pub const OPENAI_OAUTH_DEFAULT_BASE_URL: &str = "http://127.0.0.1:10531/v1";
+
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -447,6 +460,11 @@ pub fn built_in_model_providers(
     // open source ("oss") providers by default. Users are encouraged to add to
     // `model_providers` in config.toml to add their own providers.
     [
+        // kimcli-branding: the built-in openai-oauth provider is the one kimcli
+        // actually resolves to (hard-pinned in codex_core::config). The others
+        // remain registered so upstream code paths/tests that look them up by id
+        // keep working, but nothing routes to them.
+        (OPENAI_OAUTH_PROVIDER_ID, create_openai_oauth_provider()),
         (OPENAI_PROVIDER_ID, openai_provider),
         (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
         (
@@ -524,6 +542,42 @@ pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> Mod
         .filter(|v| !v.trim().is_empty())
         .unwrap_or(default_codex_oss_base_url);
     create_oss_provider_with_base_url(&codex_oss_base_url, wire_api)
+}
+
+/// kimcli-branding: build the built-in `openai-oauth` provider.
+///
+/// Token-less by design: the proxy authenticates with the user's ChatGPT session
+/// (`~/.codex/auth.json`), so `env_key` is None and `requires_openai_auth` is
+/// false — kimcli must never send an OpenAI API key or ChatGPT bearer of its own.
+/// The endpoint is overridable via `OPENAI_OAUTH_BASE_URL` for users who run the
+/// proxy on a non-default `--host`/`--port`.
+pub fn create_openai_oauth_provider() -> ModelProviderInfo {
+    let base_url = std::env::var("OPENAI_OAUTH_BASE_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| OPENAI_OAUTH_DEFAULT_BASE_URL.to_string());
+
+    ModelProviderInfo {
+        name: OPENAI_OAUTH_PROVIDER_NAME.into(),
+        base_url: Some(base_url),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        supports_standalone_web_search: false,
+    }
 }
 
 pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> ModelProviderInfo {

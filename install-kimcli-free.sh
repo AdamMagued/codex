@@ -46,17 +46,13 @@ CARGO_PROFILE_RELEASE_LTO=off cargo build --release --bin kimcli
 echo "==> Installing kimcli to /usr/local/bin (may ask for your Mac password)…"
 sudo ln -sf "$SRC/codex-rs/target/release/kimcli" /usr/local/bin/kimcli
 
-# 7) Route kimcli through the openai-oauth proxy
+# 7) Pick a default model.
+# NOTE: the openai-oauth proxy routing is COMPILED INTO kimcli (it is a built-in,
+# hard-pinned provider), so no provider config is needed or possible here — every
+# session runs on your ChatGPT account for free. Only the model is configurable.
 mkdir -p "$HOME/.kim/codex"
 cat > "$HOME/.kim/codex/config.toml" <<'CFG'
 model = "gpt-5.6-sol"
-model_provider = "openai-oauth"
-
-[model_providers.openai-oauth]
-name = "OpenAI (ChatGPT via openai-oauth)"
-base_url = "http://127.0.0.1:10531/v1"
-wire_api = "responses"
-requires_openai_auth = false
 CFG
 
 # 8) `kimcli-free` launcher — starts the proxy (and ChatGPT login on first run)
