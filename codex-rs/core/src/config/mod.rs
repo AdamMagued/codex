@@ -328,6 +328,30 @@ pub(crate) async fn test_config() -> Config {
     .expect("load default test config")
 }
 
+/// kimcli-branding: true when a provider's `base_url` points at this machine.
+///
+/// Used to decide whether a configured `model_provider` override may be honored
+/// (see the provider resolution in `ConfigBuilder`). Loopback endpoints are local
+/// proxies — they cost nothing — whereas any routable host could be a billable
+/// API, so only the former is allowed to displace the free default. Parses the
+/// URL rather than string-matching so `http://127.0.0.1:8080/v1`,
+/// `http://[::1]/v1` and `http://localhost:1234/v1` are all recognized and a
+/// lookalike host such as `127.0.0.1.evil.com` is not.
+fn provider_base_url_is_loopback(base_url: &str) -> bool {
+    let Ok(url) = ::url::Url::parse(base_url) else {
+        return false;
+    };
+    match url.host() {
+        Some(::url::Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(::url::Host::Ipv6(addr)) => addr.is_loopback(),
+        Some(::url::Host::Domain(host)) => {
+            let host = host.to_ascii_lowercase();
+            host == "localhost" || host.ends_with(".localhost")
+        }
+        None => false,
+    }
+}
+
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Permissions {
@@ -3551,17 +3575,36 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
-        // kimcli-branding: hard-pinned to the built-in `openai-oauth` provider.
+        // kimcli-branding: never talk to a paid/remote backend.
         //
         // Upstream this is `model_provider.or(cfg.model_provider).unwrap_or("openai")`,
-        // i.e. the CLI flag or `model_provider` in config.toml picks the backend.
-        // kimcli exists to run entirely on the local `openai-oauth` proxy (the
-        // user's ChatGPT session, no API key), so the resolved provider is pinned
-        // here — the single chokepoint every caller shares — rather than left to a
-        // default that a stray config value or flag could silently override.
-        // `model_provider` / `cfg.model_provider` are intentionally ignored.
-        let _ignored_configured_provider = model_provider.or(cfg.model_provider);
-        let model_provider_id = OPENAI_OAUTH_PROVIDER_ID.to_string();
+        // so a CLI flag or `model_provider` in config.toml selects the backend and the
+        // fallback is OpenAI's paid API. kimcli runs on the local `openai-oauth` proxy
+        // (the user's ChatGPT session, no API key), so the rule here is:
+        //
+        //   * default  -> the built-in `openai-oauth` provider, always;
+        //   * override -> honored ONLY when the selected provider points at a loopback
+        //     address, i.e. another local proxy that likewise costs nothing.
+        //
+        // A loopback-only allowance is what keeps this both free AND usable: Kim's
+        // desktop app routes kimcli at its own local proxy (`model_provider = kim-proxy`
+        // with a 127.0.0.1 base_url — see orchestrator/codex_appserver_transport.py),
+        // and the binary's own integration tests do the same. An absolute pin silently
+        // broke both. Anything non-loopback (api.openai.com, a remote gateway, …) is
+        // refused and falls back to the free provider, so no config value or flag can
+        // route kimcli somewhere billable.
+        let configured_provider = model_provider.or(cfg.model_provider);
+        let model_provider_id = match configured_provider {
+            Some(id)
+                if model_providers
+                    .get(&id)
+                    .and_then(|provider| provider.base_url.as_deref())
+                    .is_some_and(provider_base_url_is_loopback) =>
+            {
+                id
+            }
+            _ => OPENAI_OAUTH_PROVIDER_ID.to_string(),
+        };
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
