@@ -259,12 +259,11 @@ fn is_loopback_url(url: &Url) -> bool {
 }
 
 pub async fn download_and_install_remote_plugin_bundle(
-    config: &RemotePluginServiceConfig,
+    _config: &RemotePluginServiceConfig,
     codex_home: PathBuf,
     bundle: ValidatedRemotePluginBundle,
 ) -> Result<PluginInstallResult, RemotePluginBundleInstallError> {
     let bundle_bytes = download_remote_plugin_bundle_with_limit(
-        config,
         &bundle.bundle_download_url,
         /*max_bytes*/ REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES,
     )
@@ -281,12 +280,11 @@ pub async fn download_and_install_remote_plugin_bundle(
 }
 
 pub(crate) async fn download_and_extract_remote_plugin_bundle_to_path(
-    config: &RemotePluginServiceConfig,
+    _config: &RemotePluginServiceConfig,
     bundle: ValidatedRemotePluginBundle,
     destination: AbsolutePathBuf,
 ) -> Result<AbsolutePathBuf, RemotePluginBundleInstallError> {
     let bundle_bytes = download_remote_plugin_bundle_with_limit(
-        config,
         &bundle.bundle_download_url,
         /*max_bytes*/ REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES,
     )
@@ -707,7 +705,7 @@ mod tests {
         let download_url = format!("{}/signed/plugin-bundle?sig=signed-token", server.uri());
 
         let err =
-            download_remote_plugin_bundle_with_limit(&config, &download_url, /*max_bytes*/ 64)
+            download_remote_plugin_bundle_with_limit(&download_url, /*max_bytes*/ 64)
                 .await
                 .expect_err("plain HTTP final URL should remain unsupported");
 
